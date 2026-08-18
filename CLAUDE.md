@@ -1,7 +1,70 @@
 # Live World Pulse
 
 전 세계 실시간 이벤트(지진·기상·항공기·뉴스)를 3D 지구본 + 타임라인으로 탐색하는 데이터 시각화 서비스.
-마스터 계획: `docs/PLAN.md` (검토 리포트: `docs/review/`)
+현재 단계: **Phase -1 (엔진 스파이크) 직전, 코드 0줄** — Phase -1 통과 없이 Phase 0 진입 금지. (Phase 전환 시 이 줄을 갱신할 것)
+마스터 계획: `docs/PLAN.md` (검토 리포트: `docs/review/`). 아래 규칙과 충돌 시 PLAN.md가 우선.
+
+## 기술 스택 (확정 — 변경 금지)
+
+- `Vite + React + TypeScript + React Router` — **Next.js 아님** (SPA에 정직 → PLAN §8.2)
+- `maplibre-gl ~5.24.0` **버전 핀. v6 업그레이드 금지** — v6가 MapboxOverlay 의존 `map.transform`을 제거했고 `@deck.gl/maplibre`는 npm 미출시 (PR #10566 → PLAN §8.2)
+- `deck.gl ^9.3.10` — `@deck.gl/mapbox` MapboxOverlay, **overlaid 모드만**
+- 상태: `Zustand`(전역) + `TanStack Query`(서버 데이터) / 무거운 계산은 `Web Worker`
+- 스타일: `Tailwind CSS` + CSS 토큰
+- 백엔드: Collector = Fly.io 상주 프로세스, DB = Postgres+PostGIS(Supabase), 콜드 = Cloudflare R2 Parquet
+
+## 금지 목록 (하드 룰)
+
+렌더링:
+
+- globe 위 **`interleaved: true` 금지** (#9592 깊이/컬링)
+- globe 위 **`IconLayer` 금지** (#9554 아이콘 소실) — 항공기는 ScatterplotLayer 또는 커스텀 메시
+- **런타임 globe↔mercator 수동 토글 금지** (#9466) — z~12 자동 전환은 UX로 수용
+- globe 위 **HeatmapLayer / ContourLayer / MaskExtension 금지**
+
+아키텍처:
+
+- **WebSocket 도입 금지** (초 단위 소스 없음 — 최선 지진 60초 / 항공기 90초. SSE는 Phase 2+ 재검토 → PLAN §8.1)
+- **Redis / Timescale 도입 금지** (인메모리 Map + 네이티브 파티셔닝으로 충분 → PLAN §8.1)
+- **외부 API 브라우저 직접 fetch 금지 — 유일 예외 USGS** (CORS `*`). 나머지는 전부 백엔드 경유
+- **클라이언트 Worker에서 뷰포트별 클러스터링 금지** — LOD 집계는 서버 WARM 테이블 (→ PLAN §8.3)
+- **TanStack Query에 LIVE 스트림 밀어넣기 금지** — 스트림은 별도 링버퍼, Query는 히스토리/상세만 (→ PLAN §8.4)
+- **viewport/카메라 전역 상태 금지** — 지도 인스턴스 소유, 전역엔 200~300ms 디바운스 사본만 (→ PLAN §8.4)
+
+데이터 소스:
+
+- **NewsAPI·Blitzortung 사용 금지** (ToS/제한 → PLAN §4)
+- **429 응답 재시도 금지** (크레딧 소진 의미 — 다음 슬롯 대기)
+
+기타:
+
+- URL 갱신에 **pushState 금지** — `replaceState` + 디바운스만
+- 이산 이벤트(지진·뉴스) **보간 금지** — 위치 연속인 것(항공기·태풍 트랙)만 보간
+
+## 데이터 모델 계약 (PLAN §5)
+
+- 단일 `WorldEvent` 타입 금지 — **3분기 고정**: `Occurrence`(지진·뉴스) / `Interval`(기상 경보) / `Observation`(항공기·태풍 중심). Track은 저장 타입이 아니라 `Observation[]` 파생 뷰
+- 좌표는 **GeoJSON 순서 `[lon, lat]`** — 라벨드 튜플 `[lon: number, lat: number]`로 컴파일 타임 강제
+- 시간: **UTC 강제** — DB `timestamptz`, 연산 epoch ms, 표시만 로컬. bitemporal (`observedAt` + `ingestedAt`)
+- `id = ${source}:${sourceId}` 멱등 키, `revision` 필드 필수 (USGS 규모 사후 정정)
+- severity = CAP 등급 rank 0~4 + `raw` 원본값 보존 — 레이어 간 물리량 비교가 아니라 시각 인코딩 순위
+- payload는 discriminated union — **`metadata: Record<string, unknown>` 백 금지**
+- 시각 T 질의는 kind별 규칙 상이 (occurrence=window, interval=겹침, observation=최근 1건) — 단일 timestamp 필터 금지
+
+## 테스트 규칙
+
+- **WebGL 스크린샷 회귀 금지** (GPU별 픽셀 차이) — 대신 DOM 로그 패널 스냅샷 + `pickObjectsInRect` 단정 + 프레임 시간 게이트
+- E2E(Playwright)는 **모킹 fixture만** — 실 API 물리면 100% flaky
+- 단위 테스트 최우선 대상: 어댑터/정규화, kind별 시간 슬라이스, **보간 경계(날짜변경선·극지·heading ±180 wrap)**, 상관 룰, URL 직렬화 라운드트립
+- 프레임워크: Vitest + Playwright
+
+## 표기·주장 규칙 (UI·문서 공통)
+
+- "Realtime" 표기 금지 → **"Live Data Integration"**. `● LIVE`는 최신 가용 스냅샷 의미, 3분 무갱신 시 `◐ 지연` 강등
+- 항공기 **"delayed / diverted" 문구 금지** — 계산 가능 지표만 (`traffic density -38% vs 24h baseline`)
+- 근거 없는 **"수만~수십만 이벤트" 주장 금지** — 실측 수치 + 측정 환경·fps 병기
+- 수집 갭 숨기기 금지 — 타임라인 회색 밴드로 정직 표시
+- 다크 모드 단일 — **라이트 모드 없음** (명시적 디자인 결정)
 
 ## 커밋 컨벤션
 
@@ -26,3 +89,10 @@ docs: 📝 계획서 v2 작성
 - Phase -1 엔진 스파이크 신설
 - 데이터 모델 3분기 확정
 ```
+
+## 문서 지도
+
+- 데이터 소스별 제약·ToS: PLAN §4 / 데이터 모델 전체 타입: PLAN §5
+- 아키텍처·저장 3계층·비용: PLAN §8 / Phase별 완료 조건: PLAN §9
+- 성능 예산·접근성·복원력: PLAN §10 / 리스크 대장: PLAN §12
+- 검토 리포트 원문: `docs/review/`
