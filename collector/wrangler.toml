@@ -1,0 +1,21 @@
+# Live World Pulse — Phase 0a Collector
+# PLAN §8.6 (R2 저장), §8.7 (스케줄 계약: 1분 cron 1개, 분 m%3 지역 디스패치)
+name = "lwp-collector"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# cron trigger 1개만 사용 (무료 5개 한도 — PLAN §8.7)
+[triggers]
+crons = ["* * * * *"]
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "lwp-data"
+
+# CPU 게이트 실측용 — invocation별 CPU time 로그 (PLAN §9 Phase 0a 착수 게이트)
+[observability]
+enabled = true
+
+# 시크릿 (wrangler secret put — .env 커밋 금지, PLAN §10 운영):
+#   HEALTHCHECKS_URL — healthchecks.io 핑 URL. 없으면 조용히 스킵.
+#   GATE_TOKEN — /__gates/* 실측 게이트 인증 (x-gate-token 헤더). 미설정 시 게이트 전체 404 (fail-closed).

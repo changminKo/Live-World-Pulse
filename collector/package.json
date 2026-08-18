@@ -1,0 +1,26 @@
+{
+  "name": "lwp-collector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live World Pulse Phase 0a collector — Cloudflare Workers Cron + R2 (aircraft + earthquake)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail --format json"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260818.1",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.124.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  }
+}

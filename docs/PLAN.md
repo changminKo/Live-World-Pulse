@@ -116,7 +116,7 @@ DevTools 은유를 완성하는 3요소:
 
 - API: `/v2/point/{lat}/{lon}/{radius}` (radius 최대 250nm), ADSBExchange v2 호환, 무인증. 필드 충분 (hex/lat/lon/alt_baro/gs/track/flight/category).
 - **순환 스윕 확정: 6개 지역** — 서울·도쿄·런던·프랑크푸르트·뉴욕·LA. **지역당 3분 주기** (Workers 1분 cron × 분당 2지역 — §8.7 스케줄 계약. 90s보다 완화라 스로틀에 더 안전). 대역폭 사이클당 gzip ~300~400KB.
-- rate limit: 429 없음, 대신 **소프트 스로틀** (연속 호출 시 1.3s → 10s+ 지연 급증). 버스트 금지, 지연 급증 시 사이클 스킵.
+- rate limit (⚠ 실행 위치별로 다름 — 2026-08-19 배포 실측): 로컬 IP는 소프트 스로틀뿐이나 **Cloudflare Workers 공유 IP는 강한 per-IP 스로틀** — 첫 시도 성공률 ~14%, 429 후 10s 재시도로 40% 회수. 대체 소스는 Workers에서 전멸 (adsb.fi·airplanes.live 403, OpenSky 522 — 각 0/5). **결정 (사용자 승인 2026-08-19): 수용 + 429 10s 재시도 1회** — 실효 수집률 ~30-50%, 갭은 타임라인에 정직 표시. adsb.lol 429는 크레딧 소진이 아니라 스로틀이므로 429 재시도 금지 룰의 명시적 예외.
 - **동아시아 커버리지 공백 실재** (유럽 대비 ~1/8, 피더 밀도 문제. 해양은 구조적으로 0) — UI에서 지역별 커버리지 차이를 정직하게 표기할 것.
 - 히스토리 덤프: 연도별 repo에 수년 보존, 일일 GitHub Release ~3.9GB tar (항공기당 gzip trace JSON). **조건부 백필용** — 지역별 추출 불가라 전 지구 백필엔 과체중. 실시간 API 저장분이 주 소스, 덤프는 갭 메우기·과거 이벤트 온디맨드.
 - ODbL 귀속 문구 (UI 크레딧 + 문서 라이선스 페이지): "Flight data from ADSB.lol, made available under the Open Database License (ODbL) v1.0". 파생 데이터셋(agg 집계) 공개 시 share-alike 유의.
@@ -387,7 +387,7 @@ Tailwind CSS + CSS 토큰
 - 수집 원장 (**원자성 계약**): 윈도별 기록은 immutable 엔트리 `manifest/{layer}/dt={date}/slot={t}.g{generation}.json` — 키에 layer·generation이 들어가므로 재시도(같은 내용·같은 키)와 정정(새 g 키)이 충돌 없이 공존. 슬롯별 최신 generation 포인터는 경로별 분리 — **norm 포인터 = 일 단위 shard** `manifest/pointers/norm/dt={date}.json` (90일 lifecycle 자동 pruning — norm 본체와 수명 일치), **agg 포인터 = 영구 shard** `manifest/pointers/agg/{year}.json` (agg 본체가 영구이므로 포인터도 영구 — 90일 pruning 금지). 양쪽 다 **ETag 조건부 PUT(CAS)**, 충돌 시 재읽기 후 재시도, 전역 단일 객체 금지. 갭 스캔·백필 판정·타임라인 회색 밴드는 immutable 엔트리를 읽는다
 - **갭을 UI에 노출** (타임라인 회색 밴드)
 - 데드맨 스위치: healthchecks.io 핑 (무료) — 3주기 미수신 시 알림. Workers는 상주 프로세스가 아니라 "cron 미발화"도 갭으로 잡히므로 manifest 기반 감시가 1차
-- 재시도: 같은 슬롯 내 1회만 (cron 주기가 짧아 다음 슬롯이 곧 옴). **429는 재시도 금지** (크레딧 소진 의미 — 다음 슬롯 대기)
+- 재시도: 같은 슬롯 내 1회만 (cron 주기가 짧아 다음 슬롯이 곧 옴). **429는 재시도 금지** (크레딧 소진 의미 — 다음 슬롯 대기). **명시적 예외: adsb.lol** — per-IP 스로틀이라 10s 후 1회 재시도 허용 (실측 회수율 40%, §4.3·CLAUDE.md와 동일 계약)
 - 탈락 이력: Fly.io 상주($3~5/월)·Supabase(Pro $25 강제) = 비용 / Vercel Cron(1일 1회) / GitHub Actions cron(지연 10~30분 + 60일 자동 비활성)
 
 ---
@@ -424,6 +424,8 @@ Tailwind CSS + CSS 토큰
 - 저장 = **R2 단독** (§8.6): raw 7일 롤링 + norm 15분 슬라이스 + latest 스냅샷 + manifest. DB 없음
 - 산출물: wrangler 프로젝트 (cron worker + R2 바인딩) + healthchecks 핑. ~200줄
 - **선행 검증 (착수 게이트)** — Workers 무료 CPU 한도(10ms/호출)를 최악 경로 3종으로 실측 (fetch 대기는 CPU 미과금이나 실측 전 단정 금지): ① 항공기 invocation = **분당 2지역**(실제 스케줄 §8.7) 파싱+정규화+H3+집계+gzip+manifest **+ latest.json read-modify-write 전체**(기존 ~500KB 객체 read/decompress/parse/merge/re-gzip/CAS 포함) ② GDELT 15분 슬롯 수 MB 파싱 ③ **daily capacity scan** = 90일 norm+agg 전수 prefix LIST(pagination 포함)+size 합산 — 초과 시 prefix별 분할 스캔 or 계정 metrics API 폴백을 계약. agg 포인터 shard는 연말 최대 엔트리 수 fixture로 CAS 재읽기·재직렬화 비용까지 확인.
+
+**게이트 실측 결과 (2026-08-19 배포 환경):** ① 항공기 24~102ms ② GDELT 파싱 29~49ms ③ 축적 후 재측정 — **전부 명목 10ms 초과. 그러나 강제 종료(1102) 0회** = 무료 한도가 소프트하게 동작 중 (지진 단독도 ~40ms라 사다리로도 명목 달성 불가). **운영 계약: 명목 초과 상태를 인지하고 운영하되, 플랫폼이 강제하기 시작하면(1102 발생) 폴백 사다리 2단(raw-only 강등)을 즉시 발동** — 리스크 대장 참조. **측정 범위 주의: 0a 부분 범위 측정이다 (H3 스텁·agg 미구현·15분 norm 슬라이스 전환 전 코드 기준, 항공기 1지역 경로 포함)** — 게이트가 요구한 완전 최악 경로(2지역+H3+agg+~500KB latest 왕복)가 아니므로, **Phase 1 완전 경로 구현 시 재측정해 이 기록을 갱신할 것.**
 - **CPU 초과 시 $0 폴백 사다리 (순서 고정)**: ① invocation 분할 (호출당 지역 수 축소 — CPU 예산은 invocation당 리셋, 사이클 주기가 그만큼 늘어남을 계약) ② 무거운 파싱을 raw-only 적재로 강등 — **단 강등 레이어는 norm 히스토리가 안 쌓여 해당 레이어 Time Machine이 그 기간 불가**함을 명시 (갭 밴드로 정직 표시) ③ 해당 레이어 수집 주기 완화. **Workers Paid($5/월)는 사다리 소진 후 + 사용자 명시 승인 시에만**
 - Phase 2 도달 시점에 R2에 수 주치 norm 히스토리가 자동으로 존재
 
@@ -583,9 +585,10 @@ dev 오버레이 (FPS·객체 수·attribute 생성 시간·워커 큐)를 30분
 | ~~adsb.lol 커버리지/덤프 부실~~ | 해소 | ✅ 실측 완료 — 채택 유효. 단 동아시아 커버 유럽의 1/8 (UI 정직 표기로 대응) |
 | ~~GDACS 스펙이 기대와 다름~~ | 해소 | ✅ 실측 완료 — 채택 유효, 태풍 데모 성립 |
 | Collector 장애로 히스토리 구멍 | 상 | manifest 갭 원장 + healthchecks + UI 정직 표시 (구멍 자체를 기능으로) |
-| Workers 무료 CPU 한도(10ms) 초과 | 중 | Phase 0a 착수 게이트에서 최악 invocation 전체 경로 실측. 초과 시 $0 폴백 사다리(슬롯 분할→raw-only 강등→주기 완화), Paid는 사용자 승인 필수 |
+| Workers 무료 CPU 한도(10ms) 초과 | **현재 상태** | 실측 24~102ms로 명목 전면 초과, 단 1102 강제종료 0회 (소프트 동작). 1102 발생 시 raw-only 강등 즉시 발동. Paid는 사용자 승인 필수 |
 | raw 7일 롤링로 인한 재파싱 불가 | 중 | $0 결정의 수용된 대가. norm 스키마를 Phase 0b에서 신중히 잠그고, 스키마 변경은 7일 내 재파싱 윈도 안에서 |
 | R2 lifecycle 실패 → 무료 한도 초과 과금 | 중 | R2 무료는 hard cap 아님. lifecycle rule + Collector 내장 fail-safe(8GB 도달 시 수집 정지) 이중화 |
+| adsb.lol Workers IP 스로틀 (실효 수집률 ~30-50%) | **수용됨** | 429 10s 재시도 + 갭 정직 표시 (사용자 승인 2026-08-19). 대체 소스 Workers에서 전멸 실측 |
 | Worker 프록시 100k req/day 소진 | 저 | 통합 latest 1req/폴 기준 동시 ~48명 + 30% 예약 (§8.6). 사전 완화 = 전일 Analytics 근사 80% 기준 폴링 완화 플래그, 실시간 초과 = 플랫폼 1027 fail-closed 수용 + 클라 지수 백오프 (정확 실시간 카운터는 의도적 미보유) |
 | 스코프 크리프 | 상 | Phase별 완료 조건 체크리스트 + Globe 3일 타임박스 + "경계선" 명문화 |
 | 데모 중 API 다운 | 상 | 시드 스냅샷 + 데모 모드 + 케이스 스터디 퍼머링크 |
