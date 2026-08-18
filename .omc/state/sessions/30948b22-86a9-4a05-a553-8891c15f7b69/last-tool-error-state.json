@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"SP=/private/tmp/claude-501/-Users-doyle-orca-projects-Live-World-Pulse/30948b22-86a9-4a05-a553-8891c15f7b69/scratchpad\\nls -la \\\"$SP\\\"/research_*.md 2>/dev/null; ls -la \\\"$SP/d_research.js...",
-  "error": "Exit code 1\n(eval):2: no matches found: /private/tmp/claude-501/-Users-doyle-orca-projects-Live-World-Pulse/30948b22-86a9-4a05-a553-8891c15f7b69/scratchpad/research_*.md\n-rw-r--r--@ 1 doyle  wheel  0 Aug 18 22:23 /private/tmp/claude-501/-Users-doyle-orca-projects-Live-World-Pulse/30948b22-86a9-4a05-a553-8891c15f7b69/scratchpad/d_research.json\nTraceback (most recent call last):\n  File \"<string>\", line 3, in <module>\n  File \"/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.fra...",
-  "timestamp": "2026-08-18T13:23:34.402Z",
-  "retry_count": 1
-}

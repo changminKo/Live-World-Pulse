@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"echo \\\"=== GDELT GEO 2.0 (geojson) ===\\\"; curl -s --max-time 40 \\\"https://api.gdeltproject.org/api/v2/geo/geo?query=earthquake&format=GeoJSON&timespan=1h\\\" | head -c 1200; echo; echo \\\"===...",
-  "error": "Exit code 35\n=== GDELT GEO 2.0 (geojson) ===\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\n<html><head>\n<title>404 Not Found</title>\n</head><body>\n<h1>Not Found</h1>\n<p>The requested URL was not found on this server.</p>\n</body></html>\n\n=== GEO modes doc probe ===\nhttp=000 size=0",
-  "timestamp": "2026-08-18T11:10:11.128Z",
-  "retry_count": 1
-}

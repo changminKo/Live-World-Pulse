@@ -1,7 +1,0 @@
-{
-  "tool_name": "mcp__plugin_playwright_playwright__browser_wait_for",
-  "tool_input_preview": "{\"text\":\"auto 완료\",\"time\":15}",
-  "error": "### Error\nTimeoutError: browserBackend.callTool: Timeout 5000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('auto 완료').first() to be visible\u001b[22m",
-  "timestamp": "2026-08-18T14:22:14.941Z",
-  "retry_count": 2
-}
