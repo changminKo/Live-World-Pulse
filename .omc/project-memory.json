@@ -1,0 +1,227 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1787050024428,
+  "projectRoot": "/Users/doyle/orca/projects/Live-World-Pulse",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {},
+  "hotPaths": [
+    {
+      "path": "docs/PLAN.md",
+      "accessCount": 9,
+      "lastAccessed": 1787066177744,
+      "type": "file"
+    },
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 6,
+      "lastAccessed": 1787064318636,
+      "type": "file"
+    },
+    {
+      "path": "docs/spike/DESIGN.md",
+      "accessCount": 5,
+      "lastAccessed": 1787065871129,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/main.ts",
+      "accessCount": 5,
+      "lastAccessed": 1787065881576,
+      "type": "file"
+    },
+    {
+      "path": "docs/spike/RESULT.md",
+      "accessCount": 4,
+      "lastAccessed": 1787065871216,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/payload/generate.ts",
+      "accessCount": 4,
+      "lastAccessed": 1787065890339,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/layers.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065882060,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/payload/ticker.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065891101,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/measure/fps.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065904819,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/measure/probes.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065905519,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/measure/camera-script.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065905652,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/engines/engine-a.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065911996,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/engines/engine-b.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065912709,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/engines/engine-c.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065913414,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/measure/panel.ts",
+      "accessCount": 3,
+      "lastAccessed": 1787065982722,
+      "type": "file"
+    },
+    {
+      "path": "docs/review/B-frontend-engine.md",
+      "accessCount": 2,
+      "lastAccessed": 1787060182272,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/payload/rng.ts",
+      "accessCount": 2,
+      "lastAccessed": 1787065891021,
+      "type": "file"
+    },
+    {
+      "path": "spike/src/engines/types.ts",
+      "accessCount": 2,
+      "lastAccessed": 1787065913471,
+      "type": "file"
+    },
+    {
+      "path": "spike/README.md",
+      "accessCount": 2,
+      "lastAccessed": 1787065982773,
+      "type": "file"
+    },
+    {
+      "path": "spike/package.json",
+      "accessCount": 2,
+      "lastAccessed": 1787065983356,
+      "type": "file"
+    },
+    {
+      "path": "docs/review/research/basemap-tiles.md",
+      "accessCount": 1,
+      "lastAccessed": 1787060182823,
+      "type": "file"
+    },
+    {
+      "path": "a-rotate.png",
+      "accessCount": 1,
+      "lastAccessed": 1787062305847,
+      "type": "file"
+    },
+    {
+      "path": "a-dateline.png",
+      "accessCount": 1,
+      "lastAccessed": 1787062318979,
+      "type": "file"
+    },
+    {
+      "path": "b-poseP.png",
+      "accessCount": 1,
+      "lastAccessed": 1787062719221,
+      "type": "file"
+    },
+    {
+      "path": "a-south-rot.png",
+      "accessCount": 1,
+      "lastAccessed": 1787063028098,
+      "type": "file"
+    },
+    {
+      "path": "a-z117.png",
+      "accessCount": 1,
+      "lastAccessed": 1787063096027,
+      "type": "file"
+    },
+    {
+      "path": "a-z124.png",
+      "accessCount": 1,
+      "lastAccessed": 1787063096089,
+      "type": "file"
+    },
+    {
+      "path": "c-sydney.png",
+      "accessCount": 1,
+      "lastAccessed": 1787063160361,
+      "type": "file"
+    },
+    {
+      "path": "docs/spike/raw/engine-a.json",
+      "accessCount": 1,
+      "lastAccessed": 1787063895752,
+      "type": "file"
+    },
+    {
+      "path": "docs/spike/raw/engine-b.json",
+      "accessCount": 1,
+      "lastAccessed": 1787063896463,
+      "type": "file"
+    },
+    {
+      "path": "docs/spike/raw/engine-c.json",
+      "accessCount": 1,
+      "lastAccessed": 1787063896733,
+      "type": "file"
+    },
+    {
+      "path": "spike/index.html",
+      "accessCount": 1,
+      "lastAccessed": 1787065983728,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

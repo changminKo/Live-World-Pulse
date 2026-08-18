@@ -25,7 +25,7 @@ DevTools 은유를 완성하는 3요소:
 
 ### 포지셔닝 (정직한 서술)
 
-- ~~"Realtime"~~ → **"Live Data Integration"**. 소스 최선 해상도가 항공기 90초 / 지진 60초 / 뉴스 15분이므로 초 단위 실시간을 주장하지 않는다. `● LIVE` 표시는 "최신 가용 스냅샷"을 뜻하며, 3분 이상 갱신이 없으면 `◐ 지연`으로 강등한다.
+- ~~"Realtime"~~ → **"Live Data Integration"**. 소스 최선 해상도가 항공기 지역당 3분 / 지진 60초 / 뉴스 15분이므로 초 단위 실시간을 주장하지 않는다. `● LIVE` 표시는 "최신 가용 스냅샷"을 뜻하며, 6분(항공기 2주기) 이상 갱신이 없으면 `◐ 지연`으로 강등한다.
 - ~~"수만~수십만 이벤트"~~ → **"동시 ~2만 마커 + 24시간 궤적 재생"**. 실측 동시 데이터는 항공기 ~1만 + 지진 수백 + 뉴스 수천. 십만 급은 궤적 히스토리 렌더로 달성하며, 주장 시 측정 환경·fps를 병기한다.
 
 ---
@@ -115,11 +115,11 @@ DevTools 은유를 완성하는 3요소:
 **채택: adsb.lol 지역 한정 방식 — ✅ 실측 확정 (2026-08-18).**
 
 - API: `/v2/point/{lat}/{lon}/{radius}` (radius 최대 250nm), ADSBExchange v2 호환, 무인증. 필드 충분 (hex/lat/lon/alt_baro/gs/track/flight/category).
-- **순환 스윕 확정: 6개 지역** — 서울·도쿄·런던·프랑크푸르트·뉴욕·LA. 지역당 90s 주기, 콜 간 5s 간격 순차 (사이클 40~80s). 대역폭 사이클당 gzip ~300~400KB.
+- **순환 스윕 확정: 6개 지역** — 서울·도쿄·런던·프랑크푸르트·뉴욕·LA. **지역당 3분 주기** (Workers 1분 cron × 분당 2지역 — §8.7 스케줄 계약. 90s보다 완화라 스로틀에 더 안전). 대역폭 사이클당 gzip ~300~400KB.
 - rate limit: 429 없음, 대신 **소프트 스로틀** (연속 호출 시 1.3s → 10s+ 지연 급증). 버스트 금지, 지연 급증 시 사이클 스킵.
 - **동아시아 커버리지 공백 실재** (유럽 대비 ~1/8, 피더 밀도 문제. 해양은 구조적으로 0) — UI에서 지역별 커버리지 차이를 정직하게 표기할 것.
 - 히스토리 덤프: 연도별 repo에 수년 보존, 일일 GitHub Release ~3.9GB tar (항공기당 gzip trace JSON). **조건부 백필용** — 지역별 추출 불가라 전 지구 백필엔 과체중. 실시간 API 저장분이 주 소스, 덤프는 갭 메우기·과거 이벤트 온디맨드.
-- ODbL 귀속 문구 (UI 크레딧 + 문서 라이선스 페이지): "Flight data from ADSB.lol, made available under the Open Database License (ODbL) v1.0". 파생 DB(WARM 집계) 공개 시 share-alike 유의.
+- ODbL 귀속 문구 (UI 크레딧 + 문서 라이선스 페이지): "Flight data from ADSB.lol, made available under the Open Database License (ODbL) v1.0". 파생 데이터셋(agg 집계) 공개 시 share-alike 유의.
 - OpenSky는 서면 합의를 받으면 승격 옵션 (유지).
 
 표현 정보: 위치 / 방향 / 고도 / 속도. **"delayed / diverted" 문구는 MVP에서 금지** — 우회는 근접이 아니라 기준선 대비 편차라 룰로 도출 불가. 대신 계산 가능한 지표 사용: `traffic density -38% vs 24h baseline`.
@@ -139,7 +139,7 @@ GDACS(다재해) / NASA EONET(산불·화산·폭풍) / NASA FIRMS(위성 산불
 
 ## 5. 데이터 모델 (v1 § 16 전면 교체)
 
-단일 `WorldEvent`는 4레이어 중 3개를 못 담는다. 시간 의미론 3분기 + GeoJSON geometry + bitemporal로 확정한다.
+단일 `WorldEvent`는 4레이어 중 3개를 못 담는다. 시간 의미론 3분기 + GeoJSON geometry로 확정한다.
 
 ```ts
 type Iso = string;                       // ISO-8601, 항상 UTC
@@ -166,11 +166,11 @@ interface Severity {
 interface RecordBase {
   id: string;                            // `${source}:${sourceId}`
   source: 'usgs' | 'nws' | 'wmo' | 'gdacs' | 'adsblol' | 'gdelt';
-  sourceId: string;                      // 원본 고유 ID → UPSERT 멱등 키
+  sourceId: string;                      // 원본 고유 ID → 멱등 키 (파일 내 레코드 병합 기준)
   layer: LayerId;
   revision: number;                      // 원본 정정 시 증가 (USGS 규모 정정)
   observedAt: Iso;                       // 원본이 관측/발표한 시각
-  ingestedAt: Iso;                       // 우리가 알게 된 시각 (bitemporal replay)
+  ingestedAt: Iso;                       // 우리가 알게 된 시각 (수집 지연 관찰용)
   geometry: Geometry;
   centroid: [lon: number, lat: number];  // 렌더/클러스터링 캐시
   h3r3: string;                          // H3 res-3 셀 — LOD 집계 조인 키
@@ -195,8 +195,8 @@ interface Interval<P> extends RecordBase {
 
 /** (3) Observation — 연속 존재 개체의 시각 t 표본. 항공기, 태풍 중심.
  *  ID 계약 (반복 표본이라 공통 규칙과 다름): sourceId = `${entityId}:${bucketTs}`
- *  (bucketTs = floor(epochSeconds / 90) × 90 — 폴링 밀림 중복 방지 버킷).
- *  따라서 id = `adsblol:7c2ba6:1755540000` 꼴. DB UNIQUE(entity_id, bucket_ts). */
+ *  (bucketTs = floor(epochSeconds / 180) × 180 — 수집 주기(지역당 3분)와 정렬된 중복 방지 버킷).
+ *  따라서 id = `adsblol:7c2ba6:1755540000` 꼴 — 파일 내 레코드 유일 키. */
 interface Observation<P> extends RecordBase {
   kind: 'observation';
   entityId: string;                      // icao24 / 태풍 국제번호
@@ -223,11 +223,9 @@ export type WorldRecord =
 |---|---|
 | occurrence | `[T - window, T]` 발생분 (window는 레이어별: 지진 1h, 뉴스 30min 등) |
 | interval | `validFrom ≤ T < validTo` 겹침 판정 |
-| observation | `entityId`별 T 이전 최근 1건 (`DISTINCT ON`), tolerance 초과 시 stale 플래그 |
+| observation | T 직전 버킷 파일에서 `entityId`별 최신 1건, tolerance 초과 시 stale 플래그 |
 
-옵션 `asKnownAt` (`ingestedAt ≤ t`)으로 "그때 우리가 알던 세계" vs "실제로 일어난 세계"를 구분할 수 있다.
-
-**bitemporal 지원 범위 (계약 — 과대 약속 금지):** DB는 UPSERT로 **최신 상태 + revision 카운터만** 보존한다. 따라서 `asKnownAt`이 DB에서 보장하는 것은 "그 시각까지 수집된 레코드 존재 여부"(`ingestedAt` 필터)까지이며, **정정 전 옛 값 복원은 불가**하다 (예: M6.8→M7.1 정정 후 DB엔 7.1만 남음). 정정 전 값까지 포함한 완전 재생이 필요하면 R2 raw 원본(불변 적재)을 재파싱하는 오프라인 경로를 쓴다 — 그래서 R2 원본 보존이 필수다. revision 이력 테이블(append-only)은 Phase 2에서 필요가 실증되면 추가한다. **ingestedAt은 최초 인지 시각으로 고정** — UPSERT 갱신 시 덮어쓰지 않는다(ON CONFLICT 절에서 제외). 정정 도착은 revision 증가로만 표현한다. 이 규칙이 있어야 asKnownAt의 '존재 여부' 보장이 성립한다.
+**시간 재생 모드 계약 ($0 결정에 따른 단순화 — 과대 약속 금지):** Time Machine은 **"실제로 일어난 세계" 단일 모드**다. norm 슬라이스는 원본 정정(USGS 규모 등) 도착 시 **revision을 올린 새 versioned key로 재발행**하고 manifest 포인터를 갱신한다 (§8.7 — immutable 캐시와 양립). 정정 전 옛 값은 롤링 이후 소실된다. 따라서 "그때 우리가 알던 세계"(asKnownAt/bitemporal replay)는 **지원하지 않고 주장하지도 않는다** — DB 없는 $0 아키텍처의 수용된 대가. `ingestedAt`은 수집 지연 관찰·갭 판정용으로만 쓴다. §8.7의 "같은 윈도 재실행 = 내용 동일"은 정정 미포함 기준이며, 정정 재작성은 revision 증가로 구분한다.
 
 ---
 
@@ -241,7 +239,7 @@ export type WorldRecord =
 - **Phase 2 Timeline**: 서버 히스토리 기반 -24h Seek / Playback / Replay
 - 지진은 예외적으로 Phase 1부터 과거 임의 시점 조회 가능 (USGS API 위임 — 자체 저장 불필요)
 
-레이어별 네이티브 해상도(항공기 90s, 뉴스 15min)를 UI에 노출한다 — 안 하면 "타임라인이 고장난 것처럼" 보인다. 수집 갭은 스크러버에 회색 밴드로 정직하게 표시한다 (조용히 비우면 "그 시각엔 항공기가 없었다"는 거짓 세계가 된다).
+레이어별 네이티브 해상도(항공기 지역당 3분, 뉴스 15min)를 UI에 노출한다 — 안 하면 "타임라인이 고장난 것처럼" 보인다. 수집 갭은 스크러버에 회색 밴드로 정직하게 표시한다 (조용히 비우면 "그 시각엔 항공기가 없었다"는 거짓 세계가 된다).
 
 ### Time Replay와 보간
 
@@ -278,17 +276,21 @@ export type WorldRecord =
 External Sources (USGS/Open-Meteo/WMO/GDACS/adsb.lol/GDELT)
       │  (모든 외부 호출은 백엔드에서만 — 키 보호 + CORS + rate limit 공유)
       ▼
-Collector (Fly.io 상주 프로세스, 소스별 setInterval)
-      │  UPSERT (멱등 키) + 수집 원장(collector_runs) + healthchecks.io 핑
+Collector (Cloudflare Workers Cron — 1분 주기 디스패처, 소스별 슬롯)
+      │  멱등 파일 적재 + 매니페스트(수집 원장) + healthchecks.io 핑
       ▼
-┌─ HOT   [Phase 2+] Postgres+PostGIS: 항공기 48h 파티션, 지진/뉴스/경보 전량
-├─ WARM  [Phase 2+] Postgres: H3 res-3 × 15min 집계 (서버 사전계산 LOD)
-├─ COLD  Cloudflare R2 이중 경로: raw gzip JSON 불변 + norm Parquet (egress 무료)
-└─ ※ Phase 0a~1: COLD + Postgres current-state만 (§9 Phase 0a '저장 결정' 우선)
+Cloudflare R2 (단일 저장소 — DB 없음. $0 결정, 2026-08-19)
+├─ raw/    원본 gzip JSON — 7일 롤링 (lifecycle rule)
+├─ norm/   정규화 15분 버킷 슬라이스 (versioned key) — 90일 롤링 (lifecycle rule)
+├─ pin/    퍼머링크 스냅샷 (manifest + 슬라이스 복사) — 영구
+├─ agg/    H3 res-3 × 15min 집계 파일 (LOD — 수집 시 사전계산)
+├─ latest.json 전 레이어 통합 최신 스냅샷 (Collector가 read-modify-write 재조립, 1req/폴)
+└─ manifest/ 수집 원장 (윈도별 성공/실패/갭)
       ▼
-API (bbox 필터 + 시간 질의) ── Cache-Control: s-maxage=30 ── Cloudflare CDN
+Worker 프록시 (workers.dev 무료 서브도메인 — r2.dev 직접 노출 금지: 비프로덕션·rate limit)
+      │  norm/agg = immutable 장기 캐시 (Cache API) / latest = no-cache+ETag / CORS 화이트리스트
       ▼
-Frontend (폴링: TanStack Query refetchInterval, 소스 주기 정렬)
+Frontend fetch — LIVE = latest 폴링 (소스 주기 정렬), 과거 = norm 버킷 파일
       ▼
 Web Worker (파싱 → 정규화 → 시간 슬라이스 → 보간 → binary attributes)
       │  postMessage(transferable ArrayBuffer — 복제 0코스트)
@@ -297,8 +299,8 @@ deck.gl (GPU 렌더)
 ```
 
 - **WebSocket 없음.** 초 단위 소스가 없으므로 순손실. "LIVE" 체감이 필요해지면 Phase 2+에서 SSE (단방향, CDN 친화, 브라우저 재연결 기본 제공). README에 이 판단 근거를 소스 주기로 논증한다 — 그게 시니어 신호다.
-- **Redis 없음** (current state ≈ 1.5MB → Collector 프로세스 인메모리 Map). API 인스턴스 2개+ 시점에 재검토.
-- **Timescale 없음** (Supabase PG17에서 제거, Neon은 핵심 기능 비활성). 네이티브 파티셔닝 + pg_partman + BRIN.
+- **Redis 없음** — current state는 R2 `latest.json` 통합 단일 파일. 서버 상주 상태 자체가 없다.
+- **Postgres 자체 없음** ($0 결정 — §8.6). Timescale·Redis 논의는 그보다 앞서 소멸. 데이터 질의는 R2 버킷 파일 + 클라이언트 계산.
 
 ### 8.2 프론트 스택 (확정)
 
@@ -326,7 +328,7 @@ Tailwind CSS + CSS 토큰
 | Worker | payload 파싱 → 정규화 → 시간 인덱스 → 슬라이스 → 보간 → **binary attribute 생성** (`Float32Array` position 등) → transfer |
 | Main | deck.gl props 갱신 (`data: {length, attributes}`), 카메라, 픽킹, React UI |
 | Main 고정 | 픽킹 결과·툴팁·선택 상태 (마우스 지연 = 체감 품질) |
-| 서버 | **클러스터링/LOD 집계** (WARM 테이블) — 클라 Worker에서 매 뷰포트마다 클러스터링 금지 |
+| 수집기 | **클러스터링/LOD 집계** (R2 `agg/` 파일, 수집 시 사전계산) — 클라 Worker에서 매 뷰포트마다 클러스터링 금지 |
 
 성능 병목의 실체 (30k 점은 GPU에 아무것도 아님 — deck.gl은 ~1M@60fps):
 1. **attribute 재생성** — `data` 참조 갱신마다 전체 버퍼 재계산. binary attributes 직접 공급으로 우회
@@ -356,30 +358,37 @@ Tailwind CSS + CSS 토큰
 - 짧은 키 규약 (`l=eq,wx,fl,nw`)
 - 직렬화/역직렬화 **라운드트립 단위 테스트** 필수
 
-### 8.6 저장 구조 (3계층 — **Phase 2+ 목표 구조**. Phase 0a~1 저장은 §9 Phase 0a '저장 결정'이 우선)
+### 8.6 저장 구조 (R2 단일 — $0 제약 확정, 2026-08-19)
 
-전량 Postgres 보존 시 12개월차 $110~242/월로 폭발한다 (90초 주기 = 57.6GB/월). 대신:
+> **결정: 유료 인프라 불사용.** Fly.io($3~5/월)·Supabase Pro($25/월) 배제. Postgres/PostGIS 자체를 도입하지 않는다.
+> Time Machine은 DB 쿼리가 아니라 **R2의 시간 버킷 파일을 Worker 프록시 경유로 fetch**하는 방식으로 구현한다 (egress 무료 + 프록시 캐시라 성립).
 
-| 계층 | 내용 | 용량/비용 |
-|---|---|---|
-| HOT (Postgres) | 항공기 raw 48h만 (타임라인 -24h + 여유). pg_partman 파티션 + DROP (DELETE 금지). 지진/뉴스/경보 전량 | 3.84GB — Supabase Pro $25 정액 안 고정 |
-| WARM (Postgres) | H3 res-3 × 15min 버킷 집계 (카운트·평균고도·속도) = 서버 사전계산 LOD | ~1.15GB/월 |
-| COLD (R2, 이중 경로) | ① raw 원본 gzip JSON 불변 (`raw/{source}/dt=/hour=`) ② 정규화 Parquet 시간당 compaction (`norm/{layer}/dt=/hour=`). **원본 raw 보존 필수** — 항공기는 재수집 불가라 스키마 변경 시 재파싱이 유일한 복구 경로 | 유입 0a 실측 기준: raw gzip ~10GB/월 + norm Parquet ~1.2GB/월. **불변 보존이라 누적됨** — 12개월 말 ~134GB. 비용(무료 10GB-월 공제, $0.015/GB-월 누적 과금): 1년차 합계 ~$11, 12개월차 시점 ~$1.9/월. 보존 정책: raw는 무기한(재파싱 보험 — 이 비용은 수용), 재검토 트리거 = 월 저장료 $5 초과 시 |
+| 경로 | 내용 | 보존 정책 | 용량 (0a 실측 유입 기준) |
+|---|---|---|---|
+| `raw/{source}/dt=/hour=` | 원본 gzip JSON 불변 | **7일 롤링 삭제** — 스키마 변경 시 최근 7일만 재파싱 가능 ($0의 대가로 수용) | ~0.35GB/day → 상주 ~2.4GB |
+| `norm/{layer}/dt=/slot=` | 정규화 15분 버킷 슬라이스 (gzip JSON) | **90일 롤링 삭제** (R2 lifecycle rule로 자동화 — 수동 삭제 의존 금지) | ~1.2GB/월 유입 → 상주 상한 3.6GB 고정 |
+| `agg/h3r3/dt=/slot=` | H3 res-3 × 15min 집계 (LOD) — norm과 동일한 `g{generation}` versioned key (§8.7) | 영구 (연 ~0.5GB — 소량이라 허용, 5GB 도달 시 재검토) | ~40MB/월 |
+| `pin/{pinId}/` | 케이스 스터디 퍼머링크 스냅샷 — **pin manifest(재생에 필요한 전 레이어·시간 윈도 파일 목록) + 해당 norm 슬라이스 복사본.** URL은 `?pin={pinId}`로 진입, 프록시가 pin manifest를 resolve. 생성 시점 스냅샷 고정 (이후 원본 정정 미반영을 명시) | 영구 (건당 수 MB) | 무시 가능 |
+| `latest.json` (통합 단일 객체) | 전 레이어 최신 스냅샷 — **Collector가 read-modify-write로 재조립**: 기존 latest.json 읽기 → 이번 invocation이 갱신한 레이어/지역 분만 교체 → ETag 조건부 PUT(CAS, 충돌 시 재시도. 1분 cron이라 경합 드묾). stateless invocation이 나머지 레이어를 보존하는 유일한 경로 | 덮어쓰기, gzip 크기 [검증 필요: 실측 — 목표 500KB 이하, 초과 시 latest manifest + 변경 레이어 조건부 fetch로 전환] | 소량 상주 |
+| `manifest/dt=.json` | 수집 원장 (윈도별 상태·갭) | 영구 | 무시 가능 |
 
-- Geo 인덱스: **PostGIS `geography` + GiST 채택** (반경 300km 측지 정확). H3는 집계 GROUP BY 키로 병행 (역할 분담). Geohash 탈락 (극지 왜곡 + 접두사 경계).
-- 시간 인덱스: BRIN (append-only 최적, 인덱스 오버헤드 거의 0).
-- **egress 예산**: bbox 필터 필수 + 바이너리 응답(Float32Array) + CDN `s-maxage=30`. JSON 전량 응답이면 월 방문자 1,250명에 무료 egress 소진.
+- **R2 무료 한도 검산 (retention 계약 반영)**: 상주 = raw 2.45GB(7일) + norm 3.6GB(90일 롤링) ≈ 6.1GB 고정 + 증가분(agg·pin·manifest) 연 ~0.5GB. **fail-safe 선(8GB) 도달 추정 ~3.8년** — 그 전에 agg 다운샘플/보존 축소를 재검토한다 (영구 무료 주장이 아니라 '수년 운영 + 도달 전 재검토' 계약). Class A(쓰기): 1분 cron 43,200/월 + raw·norm·agg·latest·manifest PUT 합산 보수 추정 **~20만~35만/월** vs 무료 100만/월 (여유 ~3배). Class B(읽기)는 프록시 Worker 뒤라 여유. **주의: R2 무료는 hard cap이 아니다** (Standard storage 한정, 초과분 자동 과금) — 아래 fail-safe로 방어.
+- **fail-safe (이중 관측)**: ① 1차 = 일 1회 prefix LIST로 **실측 용량** 산출해 manifest에 기록 (기대치 누적이 아니라 실측 — lifecycle 삭제 실패를 잡는 유일한 방법. lifecycle 삭제는 만료 후 24h+ 지연 가능하므로 허용 오차 +1일치 유입) ② 2차 = 실측 8GB 도달 시 수집 일시 정지 + 알림. 삭제·축소가 과금보다 먼저 — 자동 과금으로 새는 구조를 만들지 않는다.
+- Geo 처리: PostGIS 없음 — **반경/상관 계산은 클라이언트** (이벤트 수천 개 규모라 haversine/H3로 충분, §7 상관 룰). H3 res-3 셀 키는 수집 시 부여 (§5 `h3r3` 유지).
+- 시각 T 질의 (§5 계약)는 파일 단위로 구현 (Worker 프록시 경유 fetch): occurrence = 해당 슬라이스 파일들의 window 병합, interval = 활성 목록 파일, observation = T 직전 버킷 파일의 entityId별 최신.
+- **공개 접근 경로 계약**: `r2.dev` 공개 URL 사용 금지 (비프로덕션·가변 rate limit·캐시 미지원). 읽기는 **Worker 프록시** (`*.workers.dev` — 커스텀 도메인 불필요). **수용량 모델 (무료 100k req/day, Cache API 히트도 invocation 1회로 과금됨에 주의)**: LIVE는 **레이어 통합 `latest.json` 1파일**로 폴링 (4레이어 각각이 아니라 1req/폴) — 60s 폴링 기준 방문자당 60req/h → 예산의 70%(70k)를 LIVE에 배정하면 **동시 체류 ~48명**, 30%는 Time Machine 조회·burst 예약. **quota 방어 (정직한 한계 명시)**: 요청별 정확한 전역 카운터를 의도적으로 두지 않는다 — SQLite-backed Durable Objects는 무료 플랜에도 있으나(100k req/day) 요청마다 DO 호출을 얹으면 같은 무료 예산을 이중 소모하고 아키텍처에 상태 컴포넌트가 추가된다. KV 무료는 쓰기 1k/day, R2 요청별 CAS는 Class A 낭비 — 따라서 R2-only 단순성을 유지하고 근사로 간다. 따라서 ① 사전 차단은 **근사** — daily capacity scan 시 Cloudflare GraphQL Analytics로 **전일 invocation 수** 조회, 80% 초과면 R2에 완화 플래그 기록 → Worker가 응답 헤더로 클라 폴링 주기 완화(60s→180s) 지시 ② 실시간 초과의 하드 방어는 플랫폼 Error 1027 fail-closed를 수용 (클라는 1027/오류 시 지수 백오프) ③ 비브라우저 abuse 대비 IP 단순 rate limit 내장 (CORS는 브라우저 정책일 뿐 방어가 아님). 캐시: norm/agg = versioned key `immutable` + Cache API (R2 Class B 절감용 — invocation 절감 아님), latest = `no-cache` + ETag.
 
 ### 8.7 Collector 신뢰성 (이 제품의 코어)
 
 **이 제품은 과거를 파는 제품이다. Collector 다운 = 그 시간대 영구 손실 (항공기는 소급 불가).**
 
-- 멱등 UPSERT: 지진 `(source, sourceId)` / 뉴스 `(source, sha256(url))` / 경보 `(source, sourceId, sent)` / 항공기 current(0a)=`PK(entity_id)`·history(Phase 2)=`UNIQUE(entity_id, bucket_ts)` — bucket_ts = floor(epochSeconds/90)×90, 폴링 밀림 중복 방지
-- 수집 원장 `collector_runs (source, window, status, count, error)` — 재기동 시 갭 스캔, 소급 가능 소스는 백필, 불가면 `gap` 레코드로 명시
+- 실행: **Cloudflare Workers Cron Trigger** (1분 주기, 무료 계정 cron trigger 최대 5개 — 우리는 1개만 사용). **스케줄 계약: 항공기는 90초가 아니라 '분 단위 3분 사이클'로 재정의** — 분 m%3==0에 지역 1·2, m%3==1에 지역 3·4, m%3==2에 지역 5·6 → 지역당 3분 주기(90s보다 완화, adsb.lol 스로틀에 더 안전. 표시 해상도 계약도 '지역당 3분'으로 갱신). 지진 매분, 뉴스 15분 슬롯. 호출당 지역 2개 = 순차 fetch 2회 + 파싱 — **CPU 예산(10ms)은 invocation당 리셋되므로 분할 단위 = invocation**. CPU 한도 검증·폴백 사다리는 §9 Phase 0a 착수 게이트 참조 (Paid 전환은 사다리 소진 + 사용자 명시 승인 시에만)
+- 멱등성: DB UPSERT 대신 **결정론 파일명** — **`norm/{layer}/dt={date}/slot={slotStart}.g{generation}.json.gz` — 파일 단위 generation versioned key.** `generation`은 슬롯 파일의 재발행 차수로, 레코드별 `revision`(§5 — 파일 안 각 레코드의 원본 정정 카운터)과 **별개**다. 같은 윈도 재실행(내용 불변) = g0 유지, 파일 내 어떤 레코드든 정정 반영 시 g1, g2… 새 키 발행 + manifest 포인터 갱신 — immutable 장기 캐시와 양립. **agg도 동일 규칙** (정정이 집계값을 바꾸므로 unversioned 영구 키 금지). 옛 generation 정리는 경로별로 다름 — **norm 옛 g = 90일 lifecycle에 위임 / agg 옛 g = Collector 명시 DELETE** (순서 고정: 새 g 발행 → 포인터 CAS 성공 → 유예 1h 후 DELETE — 읽기 경합 결손 방지). 항공기 버킷 = floor(epochSeconds/180)×180 (§5 Observation ID 계약과 일치 — 지역당 3분 주기 정렬)
+- 수집 원장 (**원자성 계약**): 윈도별 기록은 immutable 엔트리 `manifest/{layer}/dt={date}/slot={t}.g{generation}.json` — 키에 layer·generation이 들어가므로 재시도(같은 내용·같은 키)와 정정(새 g 키)이 충돌 없이 공존. 슬롯별 최신 generation 포인터는 경로별 분리 — **norm 포인터 = 일 단위 shard** `manifest/pointers/norm/dt={date}.json` (90일 lifecycle 자동 pruning — norm 본체와 수명 일치), **agg 포인터 = 영구 shard** `manifest/pointers/agg/{year}.json` (agg 본체가 영구이므로 포인터도 영구 — 90일 pruning 금지). 양쪽 다 **ETag 조건부 PUT(CAS)**, 충돌 시 재읽기 후 재시도, 전역 단일 객체 금지. 갭 스캔·백필 판정·타임라인 회색 밴드는 immutable 엔트리를 읽는다
 - **갭을 UI에 노출** (타임라인 회색 밴드)
-- 데드맨 스위치: healthchecks.io 핑 (무료, 3줄) — 3주기 미수신 시 알림
-- 재시도: 지수 백오프 + 지터, 최대 3회. **429는 재시도 금지** (크레딧 소진 의미 — 다음 슬롯 대기)
-- 실행: Fly.io 상주 프로세스 ($2.02/월). Vercel Cron(1일 1회 제한)·GitHub Actions cron(지연 10~30분 + 60일 자동 비활성) 탈락
+- 데드맨 스위치: healthchecks.io 핑 (무료) — 3주기 미수신 시 알림. Workers는 상주 프로세스가 아니라 "cron 미발화"도 갭으로 잡히므로 manifest 기반 감시가 1차
+- 재시도: 같은 슬롯 내 1회만 (cron 주기가 짧아 다음 슬롯이 곧 옴). **429는 재시도 금지** (크레딧 소진 의미 — 다음 슬롯 대기)
+- 탈락 이력: Fly.io 상주($3~5/월)·Supabase(Pro $25 강제) = 비용 / Vercel Cron(1일 1회) / GitHub Actions cron(지연 10~30분 + 60일 자동 비활성)
 
 ---
 
@@ -411,13 +420,12 @@ Tailwind CSS + CSS 토큰
 
 **지구본 코드 한 줄 쓰기 전에 배포한다. 이 시점부터 히스토리 시계가 돈다.**
 
-- 항공기 90s 스냅샷(6지역 스윕) + 지진 60s 수집
-- **0a 저장 결정: R2 중심, Postgres 최소.** 6지역 실측 기준 사이클당 ~2,500~3,000행 × 960사이클/day × 200B ≈ **일 520MB** — Supabase Free(500MB)는 retention 24h로도 초과. 따라서:
-  - **R2 (필수·전량)**: ① raw 원본 gzip JSON 불변 적재 (`raw/{source}/dt=/hour=`) ② 정규화 Parquet 시간당 compaction (`norm/{layer}/dt=/hour=`) — 두 경로 분리, 멱등 파일명(윈도 기준)
-  - **Postgres (Free)**: 최신 스냅샷(current state)만 — 히스토리 테이블 없음. HOT 48h 테이블은 Phase 2 진입 시 Pro 전환과 함께 생성하고 R2에서 백필
-- 0a 최소 스키마 계약: `flight_obs_current(entity_id PK, bucket_ts, lon, lat, alt_baro, gs, track, ...)` — bucket = 90s floor. Phase 2 히스토리 테이블은 `UNIQUE(entity_id, bucket_ts)` (§5 Observation ID 계약과 일치)
-- UI 없음. healthchecks.io 핑만. ~150줄
-- Phase 2 도달 시점에 R2에 수 주치 히스토리가 자동으로 존재
+- 항공기 지역당 3분 스냅샷(6지역 스윕, §8.7 스케줄 계약) + 지진 60s 수집 — **Cloudflare Workers Cron**
+- 저장 = **R2 단독** (§8.6): raw 7일 롤링 + norm 15분 슬라이스 + latest 스냅샷 + manifest. DB 없음
+- 산출물: wrangler 프로젝트 (cron worker + R2 바인딩) + healthchecks 핑. ~200줄
+- **선행 검증 (착수 게이트)** — Workers 무료 CPU 한도(10ms/호출)를 최악 경로 3종으로 실측 (fetch 대기는 CPU 미과금이나 실측 전 단정 금지): ① 항공기 invocation = **분당 2지역**(실제 스케줄 §8.7) 파싱+정규화+H3+집계+gzip+manifest **+ latest.json read-modify-write 전체**(기존 ~500KB 객체 read/decompress/parse/merge/re-gzip/CAS 포함) ② GDELT 15분 슬롯 수 MB 파싱 ③ **daily capacity scan** = 90일 norm+agg 전수 prefix LIST(pagination 포함)+size 합산 — 초과 시 prefix별 분할 스캔 or 계정 metrics API 폴백을 계약. agg 포인터 shard는 연말 최대 엔트리 수 fixture로 CAS 재읽기·재직렬화 비용까지 확인.
+- **CPU 초과 시 $0 폴백 사다리 (순서 고정)**: ① invocation 분할 (호출당 지역 수 축소 — CPU 예산은 invocation당 리셋, 사이클 주기가 그만큼 늘어남을 계약) ② 무거운 파싱을 raw-only 적재로 강등 — **단 강등 레이어는 norm 히스토리가 안 쌓여 해당 레이어 Time Machine이 그 기간 불가**함을 명시 (갭 밴드로 정직 표시) ③ 해당 레이어 수집 주기 완화. **Workers Paid($5/월)는 사다리 소진 후 + 사용자 명시 승인 시에만**
+- Phase 2 도달 시점에 R2에 수 주치 norm 히스토리가 자동으로 존재
 
 ### Phase 0b — 데이터 모델 확정 (0.5일) ★신설
 
@@ -432,7 +440,7 @@ Globe Experience 타임박스: 다크 스타일 + 대기광 + 60fps 관성 회�
 완료 조건 (검증 가능):
 - [ ] 엔진 확정 (선택 근거 1페이지)
 - [ ] 실 API 지진 전건 + 항공기 5,000대+ 동시 렌더, 팬/줌 중 30fps+
-- [ ] 항공기 90초 주기 갱신 확인
+- [ ] 항공기 지역당 3분 주기 갱신 확인
 - [ ] 마커 클릭 → 원시 속성 표시
 - [ ] **공개 URL 배포** (첫 주부터 배포가 습관 — "완성 후 배포"는 사이드 프로젝트의 무덤)
 
@@ -458,10 +466,10 @@ Globe Experience 타임박스: 다크 스타일 + 대기광 + 60fps 관성 회�
 
 Phase 0a 덕에 히스토리가 이미 쌓여 있다 — "쌓기"가 아니라 "읽기"만 구현한다.
 
-- 2a: -1h Seek (외부 API + 자체 48h HOT)
-- 2b: -24h Seek + Playback + Replay (수집 24h 경과 후 자동 개방)
+- 2a: -1h Seek (지진 = USGS API 직접, 항공기 = R2 norm 최근 버킷)
+- 2b: -24h Seek + Playback + Replay (R2 norm 90일 롤링 안 — 수집 24h 경과 후 자동 개방)
 - 항공기 보간 재생, 갭 밴드 표시, IndexedDB 리플레이 캐시
-- **케이스 스터디 퍼머링크 3건** — 실제 M7급 지진 등 `?t=...` 링크 + README GIF. 라이브 사건을 기다리지 않고 차별점(시간축+상관)을 30초 안에 증명하는 보험
+- **케이스 스터디 퍼머링크 3건** — `?pin={pinId}` 링크 + README GIF. pin manifest가 재생에 필요한 전 레이어·윈도 파일 목록을 계약하고 슬라이스 복사본을 영구 보존 (§8.6 — 90일 롤링과 무관하게 성립). 생성 시점 스냅샷 고정. 라이브 사건을 기다리지 않고 차별점(시간축+상관)을 30초 안에 증명하는 보험
 
 완료 조건:
 - [ ] -24h 임의 시점 복원 + ▶ Play 재생 (항공기 텔레포트 없음)
@@ -518,18 +526,20 @@ dev 오버레이 (FPS·객체 수·attribute 생성 시간·워커 큐)를 30분
 
 ### 운영
 
-- UTC 강제 (DB timestamptz, 연산 epoch ms, 표시만 로컬)
-- 시크릿: fly secrets / env — 공개 저장소이므로 .env 커밋 금지
+- UTC 강제 (파일명·레코드 전부 UTC ISO/epoch ms, 표시만 로컬)
+- 시크릿: wrangler secret / env — 공개 저장소이므로 .env 커밋 금지 (필요 키: healthchecks URL + **Cloudflare API token** — daily scan의 GraphQL Analytics 조회용. 소스 API는 전부 무키)
 - 자체 API rate limit (IP 토큰 버킷 — 없으면 남의 스크래퍼가 내 egress를 태운다)
-- 비용 알람 (Supabase/Fly 사용량 알림 기본 비활성 — 직접 켤 것)
+- 용량 모니터 (daily capacity scan 실측치를 manifest 기록, 8GB 도달 시 수집 일시 정지 — §8.6 fail-safe. 과금 방지가 알람보다 먼저)
 - 좌표 검증: `lat=0,lon=0`(널섬)·NaN 드롭 + 카운터
 - **Attribution (법적 의무)**: 지도 타일 + adsb.lol ODbL 귀속 + USGS/GDELT/GDACS 출처 — UI 푸터 + README
 
 ### 예상 비용
 
 ```text
-Phase 0a~1:  Fly.io $2 + Supabase Free + R2(누적 과금: 첫 달 $0 → 12개월차 ~$1.9/월) + Pages Free ≈ $2~4/월
-Phase 2:     Supabase Pro $25 + Fly $2~5 + R2 누적(12개월차 ~$2/월) ≈ $27~32/월 (48h HOT 정책으로 Postgres는 정액 고정, R2만 완만 증가)
+전 단계:     $0 — Cloudflare 단일 (Workers Cron 무료 + R2 무료 10GB-월 + Pages 무료)
+             retention 정책(§8.6: raw 7일 롤링, norm 90일 롤링 삭제)으로 무료 한도 안 상주 유지 (fail-safe 8GB 도달 추정 ~3.8년 — 도달 전 재검토)
+유료 트리거: ① Workers CPU 한도 초과 (Paid $5/월 — 폴백 사다리 소진 + 사용자 승인 시에만) ② R2 상주 8GB 도달 (fail-safe = 수집 일시 정지, §8.6)
+             — 둘 다 발생 시 과금 전 축소가 우선, 과금은 사용자 명시 승인 필요
 ```
 
 ---
@@ -541,7 +551,7 @@ Phase 2:     Supabase Pro $25 + Fly $2~5 + R2 누적(12개월차 ~$2/월) ≈ $2
 | 주장 | 달성 기준 |
 |---|---|
 | 1. **이종 API → 단일 시공간 모델 정규화** | 소스 4종+ → WorldRecord 3분기 + 어댑터 단위 테스트. 가장 방어 가능 |
-| 2. **시간축 복원과 보간** | -24h 임의 시점 복원 + 보간 재생 + 갭 정직 표시 + bitemporal(asKnownAt) |
+| 2. **시간축 복원과 보간** | -24h 임의 시점 복원 + 보간 재생 + 갭 정직 표시 (단일 사실 모드 — bitemporal 미지원을 정직하게 문서화) |
 | 3. **Worker↔GPU binary attribute 파이프라인** | before/after 메인 스레드 프로파일 1장 |
 | 4. Massive Rendering | 실측 벤치 공개: 5만+ 포인트 60fps (환경 명시). 근거 없는 "수십만" 주장 금지 |
 | 5. Rate-limit-aware ingestion & gap-honest history | 크레딧 예산 계산 + 멱등 수집 + 갭 원장 — "Realtime Architecture" 대체 문구 |
@@ -572,7 +582,11 @@ Phase 2:     Supabase Pro $25 + Fly $2~5 + R2 누적(12개월차 ~$2/월) ≈ $2
 | ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정 (기준 1·2·3·6 통과 + 기준 5 스냅샷 기준 통과, 기준 4는 5/6 O + 미확정 1 — 규칙 1 준용). 미확정·미시험 3건은 Phase 0 이관 (RESULT §이관 7~9). docs/spike/RESULT.md |
 | ~~adsb.lol 커버리지/덤프 부실~~ | 해소 | ✅ 실측 완료 — 채택 유효. 단 동아시아 커버 유럽의 1/8 (UI 정직 표기로 대응) |
 | ~~GDACS 스펙이 기대와 다름~~ | 해소 | ✅ 실측 완료 — 채택 유효, 태풍 데모 성립 |
-| Collector 장애로 히스토리 구멍 | 상 | 데드맨 스위치 + 갭 원장 + UI 정직 표시 (구멍 자체를 기능으로) |
+| Collector 장애로 히스토리 구멍 | 상 | manifest 갭 원장 + healthchecks + UI 정직 표시 (구멍 자체를 기능으로) |
+| Workers 무료 CPU 한도(10ms) 초과 | 중 | Phase 0a 착수 게이트에서 최악 invocation 전체 경로 실측. 초과 시 $0 폴백 사다리(슬롯 분할→raw-only 강등→주기 완화), Paid는 사용자 승인 필수 |
+| raw 7일 롤링로 인한 재파싱 불가 | 중 | $0 결정의 수용된 대가. norm 스키마를 Phase 0b에서 신중히 잠그고, 스키마 변경은 7일 내 재파싱 윈도 안에서 |
+| R2 lifecycle 실패 → 무료 한도 초과 과금 | 중 | R2 무료는 hard cap 아님. lifecycle rule + Collector 내장 fail-safe(8GB 도달 시 수집 정지) 이중화 |
+| Worker 프록시 100k req/day 소진 | 저 | 통합 latest 1req/폴 기준 동시 ~48명 + 30% 예약 (§8.6). 사전 완화 = 전일 Analytics 근사 80% 기준 폴링 완화 플래그, 실시간 초과 = 플랫폼 1027 fail-closed 수용 + 클라 지수 백오프 (정확 실시간 카운터는 의도적 미보유) |
 | 스코프 크리프 | 상 | Phase별 완료 조건 체크리스트 + Globe 3일 타임박스 + "경계선" 명문화 |
 | 데모 중 API 다운 | 상 | 시드 스냅샷 + 데모 모드 + 케이스 스터디 퍼머링크 |
 | maplibre v6/deck.gl 생태 변동 | 저 | ~5.24 핀 + 사유 주석. @deck.gl/maplibre 출시 모니터링 |

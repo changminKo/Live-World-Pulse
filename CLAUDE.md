@@ -11,7 +11,7 @@
 - `deck.gl ^9.3.10` — `@deck.gl/mapbox` MapboxOverlay, **overlaid 모드만**
 - 상태: `Zustand`(전역) + `TanStack Query`(서버 데이터) / 무거운 계산은 `Web Worker`
 - 스타일: `Tailwind CSS` + CSS 토큰
-- 백엔드: Collector = Fly.io 상주 프로세스, DB = Postgres+PostGIS(Supabase), 콜드 = Cloudflare R2 Parquet
+- 백엔드: **$0 제약 (2026-08-19 사용자 결정) — Cloudflare 단일.** Collector = Workers Cron(1분), 저장 = R2 단독(raw 7일 롤링 + norm 15분 슬라이스 + latest + manifest — PLAN §8.6), 프론트 = Pages. **DB 없음 — Postgres/Supabase/Fly.io 도입 금지 (비용). 유료 전환은 사용자 명시 승인 필수**
 
 ## 금지 목록 (하드 룰)
 
@@ -24,10 +24,10 @@
 
 아키텍처:
 
-- **WebSocket 도입 금지** (초 단위 소스 없음 — 최선 지진 60초 / 항공기 90초. SSE는 Phase 2+ 재검토 → PLAN §8.1)
-- **Redis / Timescale 도입 금지** (인메모리 Map + 네이티브 파티셔닝으로 충분 → PLAN §8.1)
+- **WebSocket 도입 금지** (초 단위 소스 없음 — 최선 지진 60초 / 항공기 지역당 3분. SSE는 Phase 2+ 재검토 → PLAN §8.1)
+- **Redis / Timescale / Postgres 도입 금지** ($0 결정 — DB 없음, R2 파일 모델 → PLAN §8.6)
 - **외부 API 브라우저 직접 fetch 금지 — 유일 예외 USGS** (CORS `*`). 나머지는 전부 백엔드 경유
-- **클라이언트 Worker에서 뷰포트별 클러스터링 금지** — LOD 집계는 서버 WARM 테이블 (→ PLAN §8.3)
+- **클라이언트 Worker에서 뷰포트별 클러스터링 금지** — LOD 집계는 수집 시 사전계산한 R2 `agg/` 파일 (→ PLAN §8.6)
 - **TanStack Query에 LIVE 스트림 밀어넣기 금지** — 스트림은 별도 링버퍼, Query는 히스토리/상세만 (→ PLAN §8.4)
 - **viewport/카메라 전역 상태 금지** — 지도 인스턴스 소유, 전역엔 200~300ms 디바운스 사본만 (→ PLAN §8.4)
 
@@ -45,7 +45,7 @@
 
 - 단일 `WorldEvent` 타입 금지 — **3분기 고정**: `Occurrence`(지진·뉴스) / `Interval`(기상 경보) / `Observation`(항공기·태풍 중심). Track은 저장 타입이 아니라 `Observation[]` 파생 뷰
 - 좌표는 **GeoJSON 순서 `[lon, lat]`** — 라벨드 튜플 `[lon: number, lat: number]`로 컴파일 타임 강제
-- 시간: **UTC 강제** — DB `timestamptz`, 연산 epoch ms, 표시만 로컬. bitemporal (`observedAt` + `ingestedAt`)
+- 시간: **UTC 강제** — 연산 epoch ms, 표시만 로컬. `observedAt`(원본 시각) + `ingestedAt`(수집 시각) 필드 유지하되 **bitemporal replay(asKnownAt)는 미지원·주장 금지** ($0 결정 — PLAN §5)
 - `id = ${source}:${sourceId}` 멱등 키, `revision` 필드 필수 (USGS 규모 사후 정정)
 - severity = CAP 등급 rank 0~4 + `raw` 원본값 보존 — 레이어 간 물리량 비교가 아니라 시각 인코딩 순위
 - payload는 discriminated union — **`metadata: Record<string, unknown>` 백 금지**
@@ -60,7 +60,7 @@
 
 ## 표기·주장 규칙 (UI·문서 공통)
 
-- "Realtime" 표기 금지 → **"Live Data Integration"**. `● LIVE`는 최신 가용 스냅샷 의미, 3분 무갱신 시 `◐ 지연` 강등
+- "Realtime" 표기 금지 → **"Live Data Integration"**. `● LIVE`는 최신 가용 스냅샷 의미, 6분(항공기 2주기) 무갱신 시 `◐ 지연` 강등
 - 항공기 **"delayed / diverted" 문구 금지** — 계산 가능 지표만 (`traffic density -38% vs 24h baseline`)
 - 근거 없는 **"수만~수십만 이벤트" 주장 금지** — 실측 수치 + 측정 환경·fps 병기
 - 수집 갭 숨기기 금지 — 타임라인 회색 밴드로 정직 표시
