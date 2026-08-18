@@ -1,7 +1,7 @@
 # Live World Pulse 작업 계획서 v2
 
 > v1 대비 변경 요지: 4개 렌즈(데이터 소스 / 프론트 아키텍처 / 백엔드·비용 / 스코프) 검토 결과 반영.
-> 실측·공식 문서로 확인된 제약을 전제에 반영했고, 검증 불가 항목에는 [검증 필요] 표시를 남겼다.
+> 실측·공식 문서로 확인된 제약을 전제에 반영했다. [검증 필요] 3건(GDACS·adsb.lol·타일 소스)은 2026-08-18 조사 단계 실측으로 전부 확정 반영 완료.
 > 검토 리포트 원문: `docs/review/` (2026-08-18 기준 조사).
 
 ---
@@ -96,9 +96,10 @@ DevTools 은유를 완성하는 3요소:
 |---|---|---|
 | 수치 (기온·강수·풍속) | Open-Meteo | 무키, 10,000 call/day, past_days 92일 |
 | 경보 (전 지구) | WMO Alert Hub CAP 레지스트리 + NWS(미국 상세) | NWS는 `User-Agent` 필수. CAP `Minor/Moderate/Severe/Extreme` 등급을 severity rank로 직결 |
-| 태풍·재난 트랙 | **GDACS** (UN/EC, 다재해 GeoJSON, 열대저기압 트랙 포함) | [검증 필요] 엔드포인트 상세 스펙 — Phase -1에서 확인 |
+| 태풍·재난 트랙 | **GDACS** (UN/EC, 다재해 GeoJSON) | ✅ 실측 확정 (2026-08-18): 무인증, 6개 엔드포인트 전부 200. TC 트랙 = getgeometry의 LineString (forecast:true/false 구분, 6h 간격 트랙포인트 + 불확실성 콘 + 풍역 폴리곤). 서태평양 태풍 커버 확인 (JEBI-18 일본 등). 에피소드 단위 시점 스냅샷 = Time Machine 요건 충족. Green/Orange/Red → severity rank 매핑 |
 
-- **서태평양(일본) 태풍 경보 무료 API는 없다** (NHC는 대서양/동태평양만, JMA는 기계판독 API 부재). 태풍 데모는 GDACS 트랙 기반으로 구성하고, 상세 경보 데모가 필요하면 무대를 미국(NWS 커버)으로 둔다.
+- **서태평양(일본) 태풍 경보 무료 API는 없다** (NHC는 대서양/동태평양만, JMA는 기계판독 API 부재). 태풍 데모는 GDACS 트랙 기반으로 구성한다 — 실측으로 성립 확인됨.
+- GDACS 구현 주의 2건 (실측): SEARCH 기본이 Orange/Red만 반환 → `alertlevel=Green;Orange;Red` 명시 필요. 트랙포인트가 Point가 아닌 소형 Polygon → centroid 추출 필요. 응답 크기: 트랙 225~288KB, MAP 전종류 1.1MB → lazy fetch.
 - 수치 오버레이(래스터)는 범위 축소: 경보 + 트랙 우선, 전 지구 래스터는 후순위.
 
 ### 4.3 Aviation — 난이도 7 (⚠ 결정 필요)
@@ -111,7 +112,15 @@ DevTools 은유를 완성하는 3요소:
 | adsb.lol | 무키, ODbL(재배포 허용, 귀속 표기 의무), 히스토리 덤프 무료. 단 전역 엔드포인트 없음 — 250nm 타일 기반 |
 | adsb.fi / airplanes.live | 실측 HTTP 403 (Cloudflare 차단) — 사용 불가 |
 
-**채택: adsb.lol 지역 한정 방식.** 주요 지역(동아시아·북미·유럽 등) 타일 셋을 정의해 폴링한다. 전 지구 커버는 포기하고 "관심 지역 순환 스윕"으로 재정의. OpenSky는 서면 합의를 받으면 승격 옵션. [검증 필요: adsb.lol 히스토리 덤프 포맷·보존 기간 — Phase 0a에서 확인]
+**채택: adsb.lol 지역 한정 방식 — ✅ 실측 확정 (2026-08-18).**
+
+- API: `/v2/point/{lat}/{lon}/{radius}` (radius 최대 250nm), ADSBExchange v2 호환, 무인증. 필드 충분 (hex/lat/lon/alt_baro/gs/track/flight/category).
+- **순환 스윕 확정: 6개 지역** — 서울·도쿄·런던·프랑크푸르트·뉴욕·LA. 지역당 90s 주기, 콜 간 5s 간격 순차 (사이클 40~80s). 대역폭 사이클당 gzip ~300~400KB.
+- rate limit: 429 없음, 대신 **소프트 스로틀** (연속 호출 시 1.3s → 10s+ 지연 급증). 버스트 금지, 지연 급증 시 사이클 스킵.
+- **동아시아 커버리지 공백 실재** (유럽 대비 ~1/8, 피더 밀도 문제. 해양은 구조적으로 0) — UI에서 지역별 커버리지 차이를 정직하게 표기할 것.
+- 히스토리 덤프: 연도별 repo에 수년 보존, 일일 GitHub Release ~3.9GB tar (항공기당 gzip trace JSON). **조건부 백필용** — 지역별 추출 불가라 전 지구 백필엔 과체중. 실시간 API 저장분이 주 소스, 덤프는 갭 메우기·과거 이벤트 온디맨드.
+- ODbL 귀속 문구 (UI 크레딧 + 문서 라이선스 페이지): "Flight data from ADSB.lol, made available under the Open Database License (ODbL) v1.0". 파생 DB(WARM 집계) 공개 시 share-alike 유의.
+- OpenSky는 서면 합의를 받으면 승격 옵션 (유지).
 
 표현 정보: 위치 / 방향 / 고도 / 속도. **"delayed / diverted" 문구는 MVP에서 금지** — 우회는 근접이 아니라 기준선 대비 편차라 룰로 도출 불가. 대신 계산 가능한 지표 사용: `traffic density -38% vs 24h baseline`.
 
@@ -299,7 +308,8 @@ Tailwind CSS + CSS 토큰
 - **maplibre v6 금지 사유를 package.json 주석/README에 명시.** v6가 `MapboxOverlay` 의존 `map.transform`을 제거했고 대체 `@deck.gl/maplibre`는 npm 미출시. 출시되면 그때 승급.
 - **globe 위 금지 목록**: `interleaved: true` (#9592 깊이/컬링), `IconLayer` (#9554 아이콘 소실 — 항공기는 ScatterplotLayer 또는 커스텀 메시 인스턴싱), 런타임 globe↔mercator 수동 토글 (#9466), HeatmapLayer/ContourLayer/MaskExtension.
 - globe는 z~12에서 mercator 자동 전환 (float32 정밀도) — UX로 수용.
-- **베이스맵 타일**: OpenFreeMap 또는 Protomaps(pmtiles 자체 호스팅) [검증 필요 — Phase -1에서 확정]. "우주에서 본 어두운 지구" 스타일은 직접 저작하는 디자인 산출물이다.
+- **베이스맵 타일: OpenFreeMap 공개 인스턴스 — ✅ 실측 확정 (2026-08-18).** 스타일 5종 전부 200, **`https://tiles.openfreemap.org/styles/dark` 실존** (bg rgb(12,12,12), 47 layers) — 다크 저작 시작점은 이 JSON 포크 + Maputnik 편집 후 리포 커밋. 정책: 뷰/요청 무제한·상업 허용·키 불요 (SLA 없음). Protomaps 탈락: planet pmtiles 137GB self-host 부담 + 호스팅 API는 상업=스폰서십. globe 주의: `sky` 스펙 금지 (mercator 전용, maplibre #5230) + 라벨 과대/차폐는 스파이크 체크리스트로.
+- 옵션: NASA GIBS Black Marble (야간 지구 위성 래스터, CORS `*`, maxzoom 8) — 저줌 배경 하이브리드 가능. 채택 시 "브라우저 직접 fetch 예외" 규칙에 GIBS 추가 결정 필요.
 - Next.js를 버리는 대신 잃는 것: 동적 OG 이미지. 필요해지면 별도 엣지 함수로 해결 (서버에서 정사방위 투영 SVG 썸네일 — WebGL 불필요).
 - IndexedDB는 Phase 2로 연기 (용도: 리플레이 버퍼 캐시 + 콜드 스타트 즉시 페인트). MVP는 메모리 LRU + HTTP 캐시로 충분.
 
@@ -550,8 +560,8 @@ Phase 2:     Supabase Pro $25 + Fly $2~5 ≈ $27~30/월 (48h HOT 정책으로 �
 | 리스크 | 확률 | 대응 |
 |---|---|---|
 | globe 렌더 버그로 엔진 변경 | 중 | Phase -1 스파이크 + 폴백 래더 (C → mercator 3D) |
-| adsb.lol 커버리지/덤프 부실 | 중 | Phase 0a에서 실측. 실패 시 OpenSky 90s + 서면 합의 시도, 최후 항공기 레이어 축소 |
-| GDACS 스펙이 기대와 다름 | 중 | Phase -1 검증. 실패 시 태풍 데모 → 미국 무대(NWS) 전환 |
+| ~~adsb.lol 커버리지/덤프 부실~~ | 해소 | ✅ 실측 완료 — 채택 유효. 단 동아시아 커버 유럽의 1/8 (UI 정직 표기로 대응) |
+| ~~GDACS 스펙이 기대와 다름~~ | 해소 | ✅ 실측 완료 — 채택 유효, 태풍 데모 성립 |
 | Collector 장애로 히스토리 구멍 | 상 | 데드맨 스위치 + 갭 원장 + UI 정직 표시 (구멍 자체를 기능으로) |
 | 스코프 크리프 | 상 | Phase별 완료 조건 체크리스트 + Globe 3일 타임박스 + "경계선" 명문화 |
 | 데모 중 API 다운 | 상 | 시드 스냅샷 + 데모 모드 + 케이스 스터디 퍼머링크 |
