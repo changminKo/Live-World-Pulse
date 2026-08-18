@@ -1,0 +1,206 @@
+{
+  "engine": "c",
+  "aircraftLayer": "SimpleMeshLayer",
+  "measuredAt": "2026-08-18T14:22:31.748Z",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "devicePixelRatio": 1,
+  "criteria1_fps": {
+    "minWindowFps": 94.6,
+    "medianFps": 120.5,
+    "p95FrameMs": 9.9,
+    "frameCount": 3551
+  },
+  "criteria2_markers": {
+    "n0": 10652,
+    "n1": 10652,
+    "preserved": true,
+    "sentinelBefore": {
+      "expected": [
+        "sentinel-0",
+        "sentinel-1",
+        "sentinel-2",
+        "sentinel-4",
+        "sentinel-6",
+        "sentinel-8",
+        "sentinel-9",
+        "sentinel-10",
+        "sentinel-11"
+      ],
+      "hit": [
+        "sentinel-0",
+        "sentinel-1",
+        "sentinel-2",
+        "sentinel-4",
+        "sentinel-6",
+        "sentinel-8",
+        "sentinel-9",
+        "sentinel-10",
+        "sentinel-11"
+      ],
+      "miss": []
+    },
+    "sentinelAfter": {
+      "expected": [
+        "sentinel-0",
+        "sentinel-1",
+        "sentinel-2",
+        "sentinel-4",
+        "sentinel-6",
+        "sentinel-8",
+        "sentinel-9",
+        "sentinel-10",
+        "sentinel-11"
+      ],
+      "hit": [
+        "sentinel-0",
+        "sentinel-1",
+        "sentinel-2",
+        "sentinel-4",
+        "sentinel-6",
+        "sentinel-8",
+        "sentinel-9",
+        "sentinel-10",
+        "sentinel-11"
+      ],
+      "miss": []
+    }
+  },
+  "criteria3_picking": {
+    "poseP": [
+      {
+        "sentinelId": "sentinel-6",
+        "kind": "center",
+        "errorPx": 1
+      },
+      {
+        "sentinelId": "sentinel-7",
+        "kind": "rim",
+        "errorPx": 4
+      },
+      {
+        "sentinelId": "sentinel-8",
+        "kind": "rim",
+        "errorPx": 5
+      }
+    ],
+    "dateline": [
+      {
+        "sentinelId": "sentinel-0",
+        "kind": "dateline",
+        "errorPx": 0
+      },
+      {
+        "sentinelId": "sentinel-1",
+        "kind": "dateline",
+        "errorPx": 0
+      },
+      {
+        "sentinelId": "sentinel-2",
+        "kind": "dateline",
+        "errorPx": 1
+      },
+      {
+        "sentinelId": "sentinel-3",
+        "kind": "dateline",
+        "errorPx": 1
+      }
+    ]
+  },
+  "criteria5_roundtrip": {
+    "n2": 10652,
+    "preserved": true,
+    "jsErrors": 0
+  },
+  "criteria6_tickDrops": {
+    "perTick": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "max": 0,
+    "pass": true
+  },
+  "cameraScript": [
+    {
+      "name": "pan-tokyo-ny",
+      "durationMs": 4263
+    },
+    {
+      "name": "pan-ny-saopaulo",
+      "durationMs": 4508
+    },
+    {
+      "name": "zoom-in-london",
+      "durationMs": 5001
+    },
+    {
+      "name": "rotate-180",
+      "durationMs": 3007
+    },
+    {
+      "name": "rotate-back",
+      "durationMs": 4001
+    },
+    {
+      "name": "dateline-enter",
+      "durationMs": 2006
+    },
+    {
+      "name": "dateline-cross",
+      "durationMs": 3000
+    },
+    {
+      "name": "zoom-out",
+      "durationMs": 5003
+    }
+  ],
+  "jsErrorCount": 0,
+  "finalPose": {
+    "center": [
+      139.7,
+      35.6
+    ],
+    "zoom": 2,
+    "bearing": 0,
+    "pitch": 0
+  },
+  "logs": [
+    "[0.1s] payload: points=30000 aircraft=2000 arcs=200 labels=50",
+    "[0.1s] engine c 로딩...",
+    "[0.1s] engine-c: _GlobeView ready (bearing/pitch N/A)",
+    "[0.1s] engine ready",
+    "[0.1s] auto: 워밍업 2초",
+    "[2.1s] auto: pose P 이동",
+    "[4.3s] N0=10652, 센티널 9/9",
+    "[4.3s] camera: pan-tokyo-ny",
+    "[8.6s] camera: pan-ny-saopaulo",
+    "[13.1s] camera: zoom-in-london",
+    "[18.1s] camera: rotate-180",
+    "[18.1s] bearing/pitch skipped (GlobeView 미지원): bearing=180 pitch=0",
+    "[21.1s] camera: rotate-back",
+    "[25.1s] camera: dateline-enter",
+    "[27.1s] camera: dateline-cross",
+    "[30.1s] camera: zoom-out",
+    "[35.1s] FPS: min1sWindow=94.6 median=120.5 p95=9.9ms",
+    "[37.3s] N1=10652 (N0=10652) — 보존",
+    "[37.3s] auto: 날짜변경선 pose 픽킹",
+    "[39.6s] roundtrip: z14 (Tokyo)",
+    "[46.6s] roundtrip: back to z1.5",
+    "[52.8s] roundtrip 후 N2=10652 — 보존",
+    "[52.8s] auto: 틱 측정 60초 — 마우스 입력 금지",
+    "[114.0s] 틱별 드롭: [0,0,0,0,0,0,0,0,0,0,0,0] (max=0)"
+  ]
+}

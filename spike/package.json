@@ -1,0 +1,17 @@
+{
+  "name": "lwp-engine-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "maplibre-gl": "~5.24.0",
+    "deck.gl": "^9.3.10"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "vite": "^7.1.0"
+  }
+}
