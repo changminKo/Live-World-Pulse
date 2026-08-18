@@ -193,7 +193,10 @@ interface Interval<P> extends RecordBase {
   payload: P;
 }
 
-/** (3) Observation — 연속 존재 개체의 시각 t 표본. 항공기, 태풍 중심. */
+/** (3) Observation — 연속 존재 개체의 시각 t 표본. 항공기, 태풍 중심.
+ *  ID 계약 (반복 표본이라 공통 규칙과 다름): sourceId = `${entityId}:${bucketTs}`
+ *  (bucketTs = floor(epochSeconds / 90) × 90 — 폴링 밀림 중복 방지 버킷).
+ *  따라서 id = `adsblol:7c2ba6:1755540000` 꼴. DB UNIQUE(entity_id, bucket_ts). */
 interface Observation<P> extends RecordBase {
   kind: 'observation';
   entityId: string;                      // icao24 / 태풍 국제번호
@@ -223,6 +226,8 @@ export type WorldRecord =
 | observation | `entityId`별 T 이전 최근 1건 (`DISTINCT ON`), tolerance 초과 시 stale 플래그 |
 
 옵션 `asKnownAt` (`ingestedAt ≤ t`)으로 "그때 우리가 알던 세계" vs "실제로 일어난 세계"를 구분할 수 있다.
+
+**bitemporal 지원 범위 (계약 — 과대 약속 금지):** DB는 UPSERT로 **최신 상태 + revision 카운터만** 보존한다. 따라서 `asKnownAt`이 DB에서 보장하는 것은 "그 시각까지 수집된 레코드 존재 여부"(`ingestedAt` 필터)까지이며, **정정 전 옛 값 복원은 불가**하다 (예: M6.8→M7.1 정정 후 DB엔 7.1만 남음). 정정 전 값까지 포함한 완전 재생이 필요하면 R2 raw 원본(불변 적재)을 재파싱하는 오프라인 경로를 쓴다 — 그래서 R2 원본 보존이 필수다. revision 이력 테이블(append-only)은 Phase 2에서 필요가 실증되면 추가한다. **ingestedAt은 최초 인지 시각으로 고정** — UPSERT 갱신 시 덮어쓰지 않는다(ON CONFLICT 절에서 제외). 정정 도착은 revision 증가로만 표현한다. 이 규칙이 있어야 asKnownAt의 '존재 여부' 보장이 성립한다.
 
 ---
 
@@ -276,9 +281,10 @@ External Sources (USGS/Open-Meteo/WMO/GDACS/adsb.lol/GDELT)
 Collector (Fly.io 상주 프로세스, 소스별 setInterval)
       │  UPSERT (멱등 키) + 수집 원장(collector_runs) + healthchecks.io 핑
       ▼
-┌─ HOT   Postgres+PostGIS: 항공기 48h 파티션, 지진/뉴스/경보 전량
-├─ WARM  Postgres: H3 res-3 × 15min 집계 (서버 사전계산 LOD)
-└─ COLD  Cloudflare R2 Parquet: 전량 raw + 정규화본 (egress 무료)
+┌─ HOT   [Phase 2+] Postgres+PostGIS: 항공기 48h 파티션, 지진/뉴스/경보 전량
+├─ WARM  [Phase 2+] Postgres: H3 res-3 × 15min 집계 (서버 사전계산 LOD)
+├─ COLD  Cloudflare R2 이중 경로: raw gzip JSON 불변 + norm Parquet (egress 무료)
+└─ ※ Phase 0a~1: COLD + Postgres current-state만 (§9 Phase 0a '저장 결정' 우선)
       ▼
 API (bbox 필터 + 시간 질의) ── Cache-Control: s-maxage=30 ── Cloudflare CDN
       ▼
@@ -350,7 +356,7 @@ Tailwind CSS + CSS 토큰
 - 짧은 키 규약 (`l=eq,wx,fl,nw`)
 - 직렬화/역직렬화 **라운드트립 단위 테스트** 필수
 
-### 8.6 저장 구조 (3계층, 비용 근거)
+### 8.6 저장 구조 (3계층 — **Phase 2+ 목표 구조**. Phase 0a~1 저장은 §9 Phase 0a '저장 결정'이 우선)
 
 전량 Postgres 보존 시 12개월차 $110~242/월로 폭발한다 (90초 주기 = 57.6GB/월). 대신:
 
@@ -358,7 +364,7 @@ Tailwind CSS + CSS 토큰
 |---|---|---|
 | HOT (Postgres) | 항공기 raw 48h만 (타임라인 -24h + 여유). pg_partman 파티션 + DROP (DELETE 금지). 지진/뉴스/경보 전량 | 3.84GB — Supabase Pro $25 정액 안 고정 |
 | WARM (Postgres) | H3 res-3 × 15min 버킷 집계 (카운트·평균고도·속도) = 서버 사전계산 LOD | ~1.15GB/월 |
-| COLD (R2 Parquet) | 전량 raw + 정규화본, `dt=/hour=` 파티션. **원본 raw 보존 필수** — 항공기는 재수집 불가라 스키마 변경 시 재파싱이 유일한 복구 경로 | ~4.3GB/월, 연 $1 미만 (egress 무료) |
+| COLD (R2, 이중 경로) | ① raw 원본 gzip JSON 불변 (`raw/{source}/dt=/hour=`) ② 정규화 Parquet 시간당 compaction (`norm/{layer}/dt=/hour=`). **원본 raw 보존 필수** — 항공기는 재수집 불가라 스키마 변경 시 재파싱이 유일한 복구 경로 | 유입 0a 실측 기준: raw gzip ~10GB/월 + norm Parquet ~1.2GB/월. **불변 보존이라 누적됨** — 12개월 말 ~134GB. 비용(무료 10GB-월 공제, $0.015/GB-월 누적 과금): 1년차 합계 ~$11, 12개월차 시점 ~$1.9/월. 보존 정책: raw는 무기한(재파싱 보험 — 이 비용은 수용), 재검토 트리거 = 월 저장료 $5 초과 시 |
 
 - Geo 인덱스: **PostGIS `geography` + GiST 채택** (반경 300km 측지 정확). H3는 집계 GROUP BY 키로 병행 (역할 분담). Geohash 탈락 (극지 왜곡 + 접두사 경계).
 - 시간 인덱스: BRIN (append-only 최적, 인덱스 오버헤드 거의 0).
@@ -368,7 +374,7 @@ Tailwind CSS + CSS 토큰
 
 **이 제품은 과거를 파는 제품이다. Collector 다운 = 그 시간대 영구 손실 (항공기는 소급 불가).**
 
-- 멱등 UPSERT: 지진 `(source, sourceId)` / 뉴스 `(source, sha256(url))` / 경보 `(source, sourceId, sent)` / 항공기 `PK(entity_id, bucket_ts)` — bucket_ts로 폴링 밀림 중복 방지
+- 멱등 UPSERT: 지진 `(source, sourceId)` / 뉴스 `(source, sha256(url))` / 경보 `(source, sourceId, sent)` / 항공기 current(0a)=`PK(entity_id)`·history(Phase 2)=`UNIQUE(entity_id, bucket_ts)` — bucket_ts = floor(epochSeconds/90)×90, 폴링 밀림 중복 방지
 - 수집 원장 `collector_runs (source, window, status, count, error)` — 재기동 시 갭 스캔, 소급 가능 소스는 백필, 불가면 `gap` 레코드로 명시
 - **갭을 UI에 노출** (타임라인 회색 밴드)
 - 데드맨 스위치: healthchecks.io 핑 (무료, 3줄) — 3주기 미수신 시 알림
@@ -399,15 +405,19 @@ Tailwind CSS + CSS 토큰
 
 폴백 래더: A 실패 → C → 그래도 실패 → mercator 3D(pitch)로 컨셉 수정 (Cesium은 번들 141MB라 최후 수단).
 
-동시 산출물: 베이스맵 타일 소스 확정 + GDACS/adsb.lol 스펙 검증 + **디자인 방향 1페이지** (다크 계기판/관제실 무드, 모노스페이스 수치, 시맨틱 컬러 — 지진=주황, 경보=적. 라이트 모드 없음을 명시적 결정으로 문서화).
+동시 산출물: 베이스맵 타일 소스 확정 ✅ + GDACS/adsb.lol 스펙 검증 ✅ + **디자인 방향 1페이지 — ⚠ 미산출 (Phase 0 진입 전 필수로 이월)** (다크 계기판/관제실 무드, 모노스페이스 수치, 시맨틱 컬러 — 지진=주황, 경보=적. 라이트 모드 없음을 명시적 결정으로 문서화).
 
 ### Phase 0a — Collector First (반나절) ★신설
 
 **지구본 코드 한 줄 쓰기 전에 배포한다. 이 시점부터 히스토리 시계가 돈다.**
 
-- 항공기 90s 스냅샷 + 지진 60s → Postgres(48h) + R2(raw 원본 포함)
+- 항공기 90s 스냅샷(6지역 스윕) + 지진 60s 수집
+- **0a 저장 결정: R2 중심, Postgres 최소.** 6지역 실측 기준 사이클당 ~2,500~3,000행 × 960사이클/day × 200B ≈ **일 520MB** — Supabase Free(500MB)는 retention 24h로도 초과. 따라서:
+  - **R2 (필수·전량)**: ① raw 원본 gzip JSON 불변 적재 (`raw/{source}/dt=/hour=`) ② 정규화 Parquet 시간당 compaction (`norm/{layer}/dt=/hour=`) — 두 경로 분리, 멱등 파일명(윈도 기준)
+  - **Postgres (Free)**: 최신 스냅샷(current state)만 — 히스토리 테이블 없음. HOT 48h 테이블은 Phase 2 진입 시 Pro 전환과 함께 생성하고 R2에서 백필
+- 0a 최소 스키마 계약: `flight_obs_current(entity_id PK, bucket_ts, lon, lat, alt_baro, gs, track, ...)` — bucket = 90s floor. Phase 2 히스토리 테이블은 `UNIQUE(entity_id, bucket_ts)` (§5 Observation ID 계약과 일치)
 - UI 없음. healthchecks.io 핑만. ~150줄
-- Phase 2 도달 시점에 수 주치 히스토리가 자동으로 존재
+- Phase 2 도달 시점에 R2에 수 주치 히스토리가 자동으로 존재
 
 ### Phase 0b — 데이터 모델 확정 (0.5일) ★신설
 
@@ -518,8 +528,8 @@ dev 오버레이 (FPS·객체 수·attribute 생성 시간·워커 큐)를 30분
 ### 예상 비용
 
 ```text
-Phase 0a~1:  Fly.io $2 + Supabase Free + R2 Free + Pages Free ≈ $2/월
-Phase 2:     Supabase Pro $25 + Fly $2~5 ≈ $27~30/월 (48h HOT 정책으로 정액 고정)
+Phase 0a~1:  Fly.io $2 + Supabase Free + R2(누적 과금: 첫 달 $0 → 12개월차 ~$1.9/월) + Pages Free ≈ $2~4/월
+Phase 2:     Supabase Pro $25 + Fly $2~5 + R2 누적(12개월차 ~$2/월) ≈ $27~32/월 (48h HOT 정책으로 Postgres는 정액 고정, R2만 완만 증가)
 ```
 
 ---
@@ -559,7 +569,7 @@ Phase 2:     Supabase Pro $25 + Fly $2~5 ≈ $27~30/월 (48h HOT 정책으로 �
 
 | 리스크 | 확률 | 대응 |
 |---|---|---|
-| ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정, 전 기준 통과. docs/spike/RESULT.md |
+| ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정 (기준 1·2·3·6 통과 + 기준 5 스냅샷 기준 통과, 기준 4는 5/6 O + 미확정 1 — 규칙 1 준용). 미확정·미시험 3건은 Phase 0 이관 (RESULT §이관 7~9). docs/spike/RESULT.md |
 | ~~adsb.lol 커버리지/덤프 부실~~ | 해소 | ✅ 실측 완료 — 채택 유효. 단 동아시아 커버 유럽의 1/8 (UI 정직 표기로 대응) |
 | ~~GDACS 스펙이 기대와 다름~~ | 해소 | ✅ 실측 완료 — 채택 유효, 태풍 데모 성립 |
 | Collector 장애로 히스토리 구멍 | 상 | 데드맨 스위치 + 갭 원장 + UI 정직 표시 (구멍 자체를 기능으로) |

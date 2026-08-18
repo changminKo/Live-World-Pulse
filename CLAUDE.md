@@ -1,7 +1,7 @@
 # Live World Pulse
 
 전 세계 실시간 이벤트(지진·기상·항공기·뉴스)를 3D 지구본 + 타임라인으로 탐색하는 데이터 시각화 서비스.
-현재 단계: **Phase -1 완료 → Phase 0a (Collector First) 진입 가능** — 엔진 A(maplibre ~5.24 globe + deck.gl overlaid) 확정, 판정 근거 docs/spike/RESULT.md. (Phase 전환 시 이 줄을 갱신할 것)
+현재 단계: **Phase -1 완료 → Phase 0a (Collector First) 진입 가능** — 엔진 A(maplibre ~5.24 globe + deck.gl overlaid) 확정, 판정 근거 docs/spike/RESULT.md. 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 7~9. (Phase 전환 시 이 줄을 갱신할 것)
 마스터 계획: `docs/PLAN.md` (검토 리포트: `docs/review/`). 아래 규칙과 충돌 시 PLAN.md가 우선.
 
 ## 기술 스택 (확정 — 변경 금지)
