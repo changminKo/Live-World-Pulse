@@ -15,6 +15,8 @@ interface Stored {
   body: Uint8Array;
   etag: string;
   size: number;
+  uploaded: Date;
+  customMetadata?: Record<string, string>;
 }
 
 interface FakeConditional {
@@ -34,6 +36,8 @@ function objectOf(key: string, stored: Stored) {
     key,
     etag: stored.etag,
     size: stored.size,
+    uploaded: stored.uploaded,
+    customMetadata: stored.customMetadata,
     json: async () => JSON.parse(new TextDecoder().decode(bytes)) as unknown,
     text: async () => new TextDecoder().decode(bytes),
     arrayBuffer: async () =>
@@ -51,9 +55,20 @@ export class FakeR2 {
   private seq = 0;
 
   /** 훅·조건 없이 직접 주입 (경쟁자 쓰기·사전 상태 세팅) */
-  seed(key: string, value: string | ArrayBuffer | Uint8Array, sizeOverride?: number): void {
+  seed(
+    key: string,
+    value: string | ArrayBuffer | Uint8Array,
+    sizeOverride?: number,
+    customMetadata?: Record<string, string>,
+  ): void {
     const body = toBytes(value);
-    this.store.set(key, { body, etag: `"e${(this.seq += 1)}"`, size: sizeOverride ?? body.byteLength });
+    this.store.set(key, {
+      body,
+      etag: `"e${(this.seq += 1)}"`,
+      size: sizeOverride ?? body.byteLength,
+      uploaded: new Date((this.seq += 1) * 1000),
+      customMetadata,
+    });
   }
 
   textOf(key: string): string | null {
@@ -73,13 +88,21 @@ export class FakeR2 {
 
   async head(key: string) {
     const stored = this.store.get(key);
-    return stored ? { key, etag: stored.etag, size: stored.size } : null;
+    return stored
+      ? {
+          key,
+          etag: stored.etag,
+          size: stored.size,
+          uploaded: stored.uploaded,
+          customMetadata: stored.customMetadata,
+        }
+      : null;
   }
 
   async put(
     key: string,
     value: string | ArrayBuffer | Uint8Array,
-    options?: { onlyIf?: FakeConditional },
+    options?: { onlyIf?: FakeConditional; customMetadata?: Record<string, string> },
   ) {
     await this.hooks.beforePut?.(key);
     const existing = this.store.get(key);
@@ -92,7 +115,13 @@ export class FakeR2 {
     }
     this.putCount += 1;
     const body = toBytes(value);
-    const stored: Stored = { body, etag: `"e${(this.seq += 1)}"`, size: body.byteLength };
+    const stored: Stored = {
+      body,
+      etag: `"e${(this.seq += 1)}"`,
+      size: body.byteLength,
+      uploaded: new Date((this.seq += 1) * 1000),
+      customMetadata: options?.customMetadata,
+    };
     this.store.set(key, stored);
     return objectOf(key, stored);
   }

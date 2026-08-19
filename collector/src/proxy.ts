@@ -176,29 +176,36 @@ export async function handleApi(
   return notFound(cors);
 }
 
-/** GET /api/latest — LIVE 폴링 단일 파일 (§8.6: 4레이어 각각이 아니라 1req/폴).
- *  latest.json은 덮어쓰기 객체라 no-cache + ETag 재검증 — 304면 바디 전송 생략. */
+/** GET /api/latest — LIVE 폴링 단일 응답 (§8.6: 4레이어 각각이 아니라 1req/폴).
+ *  통합본은 Collector가 매 분 말미에 재조립해 둔 latest.json (r2/latest.ts
+ *  assembleLatest) — 프록시는 폴링당 **R2 GET 1회**만 (재리뷰 High1: 폴링당
+ *  파트 9 GET은 월 ~2,050만 Class B로 무료 1,000만 초과).
+ *  ETag = R2 객체 자체 etag (Med2 — 단일 객체라 updatedAt 포함 본문 전체가 입력).
+ *  R2 장애(GET throw)는 500 대신 503 + Retry-After (Med1 — 클라 백오프 계약). */
 async function latestRoute(
   request: Request,
   env: Env,
   cors: Record<string, string>,
 ): Promise<Response> {
-  const [obj, relaxed] = await Promise.all([env.DATA.get(LATEST_KEY), isPollRelaxed(env.DATA)]);
-  if (!obj) return notFound(cors);
-  const etag = httpEtagOf(obj);
-  const headers: Record<string, string> = {
-    ...cors,
-    'Cache-Control': 'no-cache',
-    ETag: etag,
-    ...(relaxed ? { 'X-Poll-Interval': String(RELAXED_POLL_INTERVAL_SEC) } : {}),
-  };
-  if (etagSatisfies(request.headers.get('if-none-match'), etag)) {
-    return new Response(null, { status: 304, headers });
+  try {
+    const [relaxed, obj] = await Promise.all([isPollRelaxed(env.DATA), env.DATA.get(LATEST_KEY)]);
+    if (!obj) return notFound(cors);
+    const pollHeader: Record<string, string> = relaxed
+      ? { 'X-Poll-Interval': String(RELAXED_POLL_INTERVAL_SEC) }
+      : {};
+    const etag = httpEtagOf(obj);
+    const headers: Record<string, string> = { ...cors, 'Cache-Control': 'no-cache', ETag: etag, ...pollHeader };
+    if (etagSatisfies(request.headers.get('if-none-match'), etag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(await obj.arrayBuffer(), {
+      status: 200,
+      headers: { ...headers, 'Content-Type': 'application/json' },
+    });
+  } catch (error: unknown) {
+    console.log(JSON.stringify({ latestRouteFailed: String(error) }));
+    return json(503, { error: 'temporarily unavailable' }, { ...cors, 'Retry-After': '30' });
   }
-  return new Response(await obj.arrayBuffer(), {
-    status: 200,
-    headers: { ...headers, 'Content-Type': 'application/json' },
-  });
 }
 
 /** GET /api/norm/{layer}/{slot}[?g=n] — 캐시 정책이 pinned 여부로 갈린다 (리뷰 Med1):

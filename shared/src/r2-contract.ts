@@ -8,6 +8,9 @@ import type { EarthquakeRecord, FlightRecord, Iso, LayerId, NewsRecord, WeatherA
  *  (optional이라 기존 R2 바이트 불변, 하위 호환). */
 export interface LatestDoc {
   updatedAt: Iso;
+  /** 조립 시점에 누락된 파트 목록 (예: 'weather', 'flight:seoul') — 해당 필드는 생략됨.
+   *  optional 추가만 (기존 필드 불변 계약) — 전 파트 존재 시 프로퍼티 자체가 없다. */
+  partial?: string[];
   layers: {
     earthquake?: { asOf: Iso; records: EarthquakeRecord[] };
     flight?: { regions: Record<string, { asOf: Iso; records: FlightRecord[] }> };

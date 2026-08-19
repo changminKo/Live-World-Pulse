@@ -36,6 +36,25 @@ export async function fetchTextWithRetry(
   return await fetchText(url, timeoutMs, headers);
 }
 
+export type FetchBytesOutcome =
+  | { ok: true; status: number; bytes: ArrayBuffer }
+  | { ok: false; status?: number; reason: 'http' | 'rate_limited' | 'timeout' | 'network' };
+
+/** 바이너리 응답용 (GDELT zip) — 규율은 fetchText와 동일 */
+export async function fetchBytes(url: string, timeoutMs: number): Promise<FetchBytesOutcome> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (res.status === 429) return { ok: false, status: 429, reason: 'rate_limited' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'http' };
+    return { ok: true, status: res.status, bytes: await res.arrayBuffer() };
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      return { ok: false, reason: 'timeout' };
+    }
+    return { ok: false, reason: 'network' };
+  }
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

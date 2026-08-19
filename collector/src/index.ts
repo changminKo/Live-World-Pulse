@@ -1,8 +1,18 @@
 /** Live World Pulse — Collector + 읽기 프록시 엔트리.
- *  cron "* * * * *" 1개: 지진 매분 + 항공기 m%3 지역 디스패치 (PLAN §8.7).
+ *  cron "* * * * *" 1개: 지진 매분 + 항공기 m%3 지역 디스패치 (PLAN §8.7)
+ *  + Phase 1: weather(GDACS) m%15==2, news(GDELT) m%15==9.
  *  UTC 03:07에 daily capacity scan (§8.6 fail-safe) — halt 플래그 존재 시 수집 전면 스킵.
  *  fetch: /__gates/*(GATE_TOKEN) + /api/* 읽기 프록시 (§8.6 공개 접근 경로 — proxy.ts). */
-import { collectFlights, collectQuakes } from './collect';
+import {
+  collectFlights,
+  collectNews,
+  collectNewsProcess,
+  collectQuakes,
+  collectWeather,
+  collectWeatherCommit,
+} from './collect';
+import { isNewsMinute, isNewsProcessMinute, isWeatherCommitMinute, isWeatherMinute } from './schedule';
+import { assembleLatest } from './r2/latest';
 import { handleApi } from './proxy';
 import { adsbGate } from './gates/adsb';
 import { gdeltGate } from './gates/gdelt';
@@ -40,27 +50,67 @@ export default {
       return;
     }
 
-    const [quakes, flights] = await Promise.allSettled([
+    // weather/news는 15분 슬롯에만 — 나머지 분은 프로퍼티 자체가 없다 (스킵 ≠ 실패).
+    // CPU 사다리 (§8.7 invocation 분할): fetch 분(m%15==2/9)과 파싱·norm 커밋 분(m%15==5/11) 분리.
+    const weatherDue = isWeatherMinute(scheduledMs);
+    const weatherCommitDue = isWeatherCommitMinute(scheduledMs);
+    const newsDue = isNewsMinute(scheduledMs);
+    const newsProcessDue = isNewsProcessMinute(scheduledMs);
+    const [quakes, flights, weather, weatherCommit, news, newsProcess] = await Promise.allSettled([
       collectQuakes(env, scheduledMs),
       collectFlights(env, scheduledMs),
+      weatherDue ? collectWeather(env, scheduledMs) : Promise.resolve(null),
+      weatherCommitDue ? collectWeatherCommit(env, scheduledMs) : Promise.resolve(null),
+      newsDue ? collectNews(env, scheduledMs) : Promise.resolve(null),
+      newsProcessDue ? collectNewsProcess(env, scheduledMs) : Promise.resolve(null),
     ]);
 
+    // 매 invocation 말미 통합 latest.json 재조립 (재리뷰 High1 — 프록시 9 GET 되돌림).
+    // 파트는 pre-serialized 문자열 그대로 concat — r2/latest.ts assembleLatest 주석 참조.
+    // 조립 실패 = latest 정체 → 데드맨 신호에 포함 (아래 allOk).
+    let latestAssembly: Record<string, unknown>;
+    let latestOk = true;
+    try {
+      const result = await assembleLatest(env.DATA);
+      latestAssembly = {
+        written: result.written,
+        partial: result.partial,
+        ...(result.invalid.length > 0 ? { invalid: result.invalid } : {}),
+        bytes: result.bytes,
+      };
+    } catch (error: unknown) {
+      latestOk = false;
+      latestAssembly = { ok: false, error: String(error) };
+    }
+
+    const settled = (r: PromiseSettledResult<unknown>) =>
+      r.status === 'fulfilled' ? r.value : { ok: false, error: String(r.reason) };
     const summary = {
       scheduledAt,
       capacity,
       pollRelax,
-      earthquake: quakes.status === 'fulfilled' ? quakes.value : { ok: false, error: String(quakes.reason) },
-      flight: flights.status === 'fulfilled' ? flights.value : { ok: false, error: String(flights.reason) },
+      latest: latestAssembly,
+      earthquake: settled(quakes),
+      flight: settled(flights),
+      ...(weatherDue ? { weather: settled(weather) } : {}),
+      ...(weatherCommitDue ? { weatherCommit: settled(weatherCommit) } : {}),
+      ...(newsDue ? { news: settled(news) } : {}),
+      ...(newsProcessDue ? { newsProcess: settled(newsProcess) } : {}),
     };
     // 관측용 구조화 로그 — wrangler tail / Workers Logs에서 invocation별 확인
     console.log(JSON.stringify(summary));
 
+    const okOf = (r: PromiseSettledResult<{ ok: boolean } | null>, due: boolean) =>
+      !due || (r.status === 'fulfilled' && r.value !== null && r.value.ok);
     const allOk =
       !scanFailed &&
-      quakes.status === 'fulfilled' &&
-      quakes.value.ok &&
-      flights.status === 'fulfilled' &&
-      flights.value.ok;
+      latestOk &&
+      okOf(quakes, true) &&
+      okOf(flights, true) &&
+      okOf(weather, weatherDue) &&
+      okOf(weatherCommit, weatherCommitDue) &&
+      okOf(news, newsDue) &&
+      okOf(newsProcess, newsProcessDue);
     await pingHealthchecks(env, allOk);
   },
 

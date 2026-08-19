@@ -4,8 +4,9 @@ import { gunzipToText } from '../src/gzip';
 import { regionsForMinute } from '../src/schedule';
 import { pointUrl } from '../src/sources/adsblol';
 import { USGS_ALL_HOUR_URL } from '../src/sources/usgs';
-import { LATEST_KEY, NORM_SLOT_SEC, OBSERVATION_BUCKET_SEC, normKey, slotStartSec } from '../src/slots';
-import type { LatestDoc } from '../src/r2/latest';
+import { NORM_SLOT_SEC, normKey, slotStartSec } from '../src/slots';
+import { latestFlightRegionKey, latestLayerKey } from '../src/r2/latest';
+import type { SnapshotPart } from '../src/r2/latest';
 import type { Env, FlightRecord } from '../src/types';
 import { FakeR2, asBucket } from './fake-r2';
 
@@ -108,18 +109,17 @@ describe('collectQuakes — 15분 norm 슬라이스 (H1) + 스키마 격리 (H3)
       () => new Response(JSON.stringify({ error: 'oops' }), { status: 200 }),
     ]]);
     const fake = new FakeR2();
-    const preserved: LatestDoc = {
-      updatedAt: '2026-08-19T11:00:00.000Z',
-      layers: { earthquake: { asOf: '2026-08-19T11:00:00.000Z', records: [] } },
-    };
-    fake.seed(LATEST_KEY, JSON.stringify(preserved));
+    const preserved: SnapshotPart<never> = { asOf: '2026-08-19T11:00:00.000Z', records: [] };
+    fake.seed(latestLayerKey('earthquake'), JSON.stringify(preserved), undefined, {
+      asOf: preserved.asOf,
+    });
 
     const summary = await collectQuakes(makeEnv(fake), T);
 
     expect(summary.ok).toBe(false);
     expect(summary.detail.reason).toBe('schema');
-    // latest는 건드리지 않는다
-    expect(fake.jsonOf<LatestDoc>(LATEST_KEY)!.layers.earthquake?.asOf).toBe('2026-08-19T11:00:00.000Z');
+    // latest 파트는 건드리지 않는다
+    expect(fake.jsonOf<SnapshotPart<never>>(latestLayerKey('earthquake'))!.asOf).toBe('2026-08-19T11:00:00.000Z');
     // 실패가 immutable status 원장에 남는다
     const statusKeys = fake.keysWithPrefix('manifest/status/earthquake/');
     expect(statusKeys).toHaveLength(1);
@@ -148,21 +148,18 @@ describe('collectFlights — 지역 격리 (H3) + ID 180s vs norm 900s (H1) + �
   const T2 = Date.UTC(2026, 7, 19, 0, 6, 0); // 같은 900s 슬롯, 다음 사이클 (같은 지역쌍)
   const NORM_SLOT = slotStartSec(T1, NORM_SLOT_SEC);
 
-  test('한 지역의 오류 JSON이 다른 지역 수집·norm 커밋·latest 보존을 깨지 않는다', async () => {
+  test('한 지역의 오류 JSON이 다른 지역 수집·latest 보존을 깨지 않는다', async () => {
     const [r1, r2] = regionsForMinute(T1);
     stubFetch([
       [(u) => u === pointUrl(r1), () => new Response(JSON.stringify({ error: 'unavailable' }), { status: 200 })],
       [(u) => u === pointUrl(r2), () => new Response(JSON.stringify({ ac: [aircraft('bbb222')] }), { status: 200 })],
     ]);
     const fake = new FakeR2();
-    // r1의 기존 latest 스냅샷 — 오류 응답이 이걸 비우면 안 된다
-    const preserved: LatestDoc = {
-      updatedAt: '2026-08-19T00:00:00.000Z',
-      layers: {
-        flight: { regions: { [r1.id]: { asOf: '2026-08-19T00:00:00.000Z', records: [] } } },
-      },
-    };
-    fake.seed(LATEST_KEY, JSON.stringify(preserved));
+    // r1의 기존 latest 파트 — 오류 응답이 이걸 비우면 안 된다
+    const preserved: SnapshotPart<never> = { asOf: '2026-08-19T00:00:00.000Z', records: [] };
+    fake.seed(latestFlightRegionKey(r1.id), JSON.stringify(preserved), undefined, {
+      asOf: preserved.asOf,
+    });
 
     const summary = await runWithTimers(collectFlights(makeEnv(fake), T1));
 
@@ -173,19 +170,11 @@ describe('collectFlights — 지역 격리 (H3) + ID 180s vs norm 900s (H1) + �
     expect(regions[r2.id]).toMatchObject({ ok: true });
     expect(summary.detail.partial).toBe(true);
 
-    // r2 records는 norm에 커밋 — 900s 슬롯, ID는 180s 버킷
-    const file = await readSlotFile(fake, normKey('flight', NORM_SLOT, 0));
-    expect(file.slotDurationSec).toBe(900);
-    const bucketTs = slotStartSec(T1, OBSERVATION_BUCKET_SEC);
-    expect(file.records.map((r) => r.sourceId)).toEqual([`bbb222:${bucketTs}`]);
-    expect(NORM_SLOT).not.toBe(bucketTs); // 파일 슬롯 ≠ ID 버킷 (혼용 회귀 방지)
+    // latest 파트: r1 보존, r2 갱신
+    expect(fake.jsonOf<SnapshotPart<never>>(latestFlightRegionKey(r1.id))!.asOf).toBe('2026-08-19T00:00:00.000Z');
+    expect(fake.jsonOf<SnapshotPart<FlightRecord>>(latestFlightRegionKey(r2.id))!.records).toHaveLength(1);
 
-    // latest: r1 스냅샷 보존, r2 갱신
-    const doc = fake.jsonOf<LatestDoc>(LATEST_KEY)!;
-    expect(doc.layers.flight?.regions[r1.id]?.asOf).toBe('2026-08-19T00:00:00.000Z');
-    expect(doc.layers.flight?.regions[r2.id]?.records).toHaveLength(1);
-
-    // 부분 실패가 immutable status 원장에 남는다
+    // 부분 실패가 immutable status 원장에 남는다 (T1은 슬롯 첫 분이 아니라 degraded 엔트리 없음)
     const statusKeys = fake.keysWithPrefix('manifest/status/flight/');
     expect(statusKeys).toHaveLength(1);
     const status = fake.jsonOf<{ outcome: string; detail: { regions: Record<string, unknown> } }>(statusKeys[0]!)!;
@@ -206,54 +195,50 @@ describe('collectFlights — 지역 격리 (H3) + ID 180s vs norm 900s (H1) + �
     const regions = summary.detail.regions as Record<string, { ok: boolean; reason?: string }>;
     expect(regions[r1.id]).toMatchObject({ ok: false, reason: 'exception' });
     expect(regions[r2.id]).toMatchObject({ ok: true });
-    const file = await readSlotFile(fake, normKey('flight', NORM_SLOT, 0));
-    expect(file.records).toHaveLength(1);
+    expect(fake.jsonOf<SnapshotPart<FlightRecord>>(latestFlightRegionKey(r2.id))!.records).toHaveLength(1);
   });
 
-  test('같은 900s 슬롯에 다음 사이클 records가 merge 누적 (g1 재발행)', async () => {
+  test('CPU 사다리 강등: flight norm은 쓰지 않는다 — raw·latest는 유지 (raw-only)', async () => {
     const [r1, r2] = regionsForMinute(T1);
-    expect(regionsForMinute(T2)).toEqual([r1, r2]); // 3분 뒤 = 같은 지역쌍
-
-    const fake = new FakeR2();
-    const env = makeEnv(fake);
-
     stubFetch([
       [(u) => u === pointUrl(r1), () => new Response(JSON.stringify({ ac: [aircraft('aaa111')] }), { status: 200 })],
       [(u) => u === pointUrl(r2), () => new Response(JSON.stringify({ ac: [] }), { status: 200 })],
     ]);
-    await runWithTimers(collectFlights(env, T1));
-    await runWithTimers(collectFlights(env, T2));
-
-    // g0: bucketTs(T1) 1건 → g1: bucketTs(T2) 추가 merge = 2건
-    const g1 = await readSlotFile(fake, normKey('flight', NORM_SLOT, 1));
-    const b1 = slotStartSec(T1, OBSERVATION_BUCKET_SEC);
-    const b2 = slotStartSec(T2, OBSERVATION_BUCKET_SEC);
-    expect(g1.records.map((r) => r.sourceId).sort()).toEqual([`aaa111:${b1}`, `aaa111:${b2}`]);
-  });
-
-  test('norm 커밋 실패는 두 지역 fetch 성공이어도 failed status + ok:false (재리뷰 H2)', async () => {
-    const [r1, r2] = regionsForMinute(T1);
-    stubFetch([
-      [(u) => u === pointUrl(r1) || u === pointUrl(r2), () => new Response(JSON.stringify({ ac: [aircraft('ddd444')] }), { status: 200 })],
-    ]);
     const fake = new FakeR2();
-    fake.hooks.beforePut = (key) => {
-      if (key.startsWith('norm/flight/')) throw new Error('r2 write down');
-    };
 
     const summary = await runWithTimers(collectFlights(makeEnv(fake), T1));
 
-    // 지역 fetch는 둘 다 성공 — 그래도 히스토리 갭을 성공으로 위장하지 않는다
-    const regions = summary.detail.regions as Record<string, { ok: boolean }>;
-    expect(regions[r1.id]).toMatchObject({ ok: true });
-    expect(regions[r2.id]).toMatchObject({ ok: true });
-    expect(summary.ok).toBe(false); // healthchecks 데드맨 판정에 반영
+    expect(summary.ok).toBe(true);
+    expect(summary.detail.norm).toEqual({ degraded: 'raw-only' });
+    // norm 히스토리는 쌓이지 않는다 (Time Machine 갭 — 정직 표시)
+    expect(fake.keysWithPrefix('norm/flight/')).toHaveLength(0);
+    // raw는 지역별로 적재 유지 (원본 보존)
+    expect(fake.keysWithPrefix('raw/adsblol/')).toHaveLength(2);
+    // latest 스냅샷도 유지
+    expect(fake.jsonOf<SnapshotPart<FlightRecord>>(latestFlightRegionKey(r1.id))!.records).toHaveLength(1);
+  });
+
+  test('강등 상태는 슬롯 첫 분에만 degraded 원장 1회 기록', async () => {
+    const T0 = Date.UTC(2026, 7, 19, 0, 0, 0); // 슬롯 첫 분
+    const [a1, a2] = regionsForMinute(T0);
+    const [b1, b2] = regionsForMinute(T1); // 같은 슬롯의 첫 분 아님 (00:03)
+    stubFetch([
+      [
+        (u) => [a1, a2, b1, b2].some((r) => u === pointUrl(r)),
+        () => new Response(JSON.stringify({ ac: [aircraft('eee555')] }), { status: 200 }),
+      ],
+    ]);
+    const fake = new FakeR2();
+    const env = makeEnv(fake);
+
+    await runWithTimers(collectFlights(env, T0));
+    await runWithTimers(collectFlights(env, T1));
 
     const statusKeys = fake.keysWithPrefix('manifest/status/flight/');
     expect(statusKeys).toHaveLength(1);
     const status = fake.jsonOf<{ outcome: string; detail: { reason?: string } }>(statusKeys[0]!)!;
-    expect(status.outcome).toBe('failed');
-    expect(status.detail.reason).toBe('norm_commit');
+    expect(status.outcome).toBe('degraded');
+    expect(status.detail.reason).toBe('cpu_ladder_raw_only');
   });
 
   test('재시도 타이밍 실측: 429=10s 후 1회, 일반 오류=5s 후 1회, 지역 간 간격=5s', async () => {
@@ -334,8 +319,7 @@ describe('flight latest 스냅샷 타입 가드', () => {
     const fake = new FakeR2();
     await runWithTimers(collectFlights(makeEnv(fake), T));
 
-    const doc = fake.jsonOf<LatestDoc>(LATEST_KEY)!;
-    const records: FlightRecord[] | undefined = doc.layers.flight?.regions[r1.id]?.records;
-    expect(Array.isArray(records)).toBe(true);
+    const part = fake.jsonOf<SnapshotPart<FlightRecord>>(latestFlightRegionKey(r1.id))!;
+    expect(Array.isArray(part.records)).toBe(true);
   });
 });

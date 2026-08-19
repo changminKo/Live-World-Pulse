@@ -6,7 +6,7 @@
 import { collectQuakes } from '../collect';
 import { gzipText } from '../gzip';
 import { sleep } from '../http';
-import { setFlightRegionLatest, updateLatest } from '../r2/latest';
+import { latestFlightRegionKey, putSnapshotIfNewer } from '../r2/latest';
 import { mergeById, upsertNormSlot } from '../r2/norm';
 import { REGIONS } from '../schedule';
 import { normalizeAdsb, pointUrl } from '../sources/adsblol';
@@ -112,7 +112,7 @@ export async function flightOneRegionGate(env: Env, regionId: string | null): Pr
   }
   const { records, dropped } = normalized;
   const asOf = new Date(nowMs).toISOString();
-  await updateLatest(env.DATA, setFlightRegionLatest(region.id, records, asOf));
+  await putSnapshotIfNewer(env.DATA, latestFlightRegionKey(region.id), asOf, records);
 
   let norm: Record<string, unknown> = { skipped: true };
   if (records.length > 0) {

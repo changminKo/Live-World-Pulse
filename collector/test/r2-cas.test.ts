@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
-import { LATEST_KEY, normPointerKey, normKey, dtOf } from '../src/slots';
-import { setEarthquakeLatest, setFlightRegionLatest, updateLatest } from '../src/r2/latest';
-import type { LatestDoc } from '../src/r2/latest';
+import { normPointerKey, normKey, dtOf } from '../src/slots';
+import { latestFlightRegionKey, latestLayerKey, putSnapshotIfNewer } from '../src/r2/latest';
+import type { SnapshotPart } from '../src/r2/latest';
 import { contentHash } from '../src/hash';
 import { gzipText } from '../src/gzip';
 import { mergeById, upsertNormSlot } from '../src/r2/norm';
@@ -67,33 +67,21 @@ function flight(hex: string, bucketTs: number, sampledAt: string): FlightRecord 
   };
 }
 
-describe('latest.json CAS (H2 — initial-create race + 단조 갱신)', () => {
-  test('최초 실행 경합: 병렬 invocation이 서로의 갱신을 지우지 않는다', async () => {
-    // Arrange — 우리 put 직전에 경쟁자가 latest를 먼저 생성하는 race 재현
+describe('latest 파트 저장 (CPU 사다리 — 레이어/지역 분리 + asOf 단조 가드)', () => {
+  test('레이어별 파트가 서로 다른 키에 저장 — 타 레이어를 건드리지 않는다', async () => {
     const fake = new FakeR2();
-    let raced = false;
-    fake.hooks.beforePut = (key) => {
-      if (key === LATEST_KEY && !raced) {
-        raced = true;
-        const competitor: LatestDoc = {
-          updatedAt: '2026-08-19T00:00:00.000Z',
-          layers: {
-            flight: {
-              regions: { tokyo: { asOf: '2026-08-19T00:00:00.000Z', records: [] } },
-            },
-          },
-        };
-        fake.seed(LATEST_KEY, JSON.stringify(competitor));
-      }
-    };
+    const bucket = asBucket(fake);
 
-    // Act
-    await updateLatest(asBucket(fake), setEarthquakeLatest([quake('q1', '2026-08-19T00:00:30.000Z')], '2026-08-19T00:01:00.000Z'));
+    await putSnapshotIfNewer(bucket, latestLayerKey('earthquake'), '2026-08-19T00:01:00.000Z', [
+      quake('q1', '2026-08-19T00:00:30.000Z'),
+    ]);
+    await putSnapshotIfNewer(bucket, latestFlightRegionKey('tokyo'), '2026-08-19T00:00:00.000Z', []);
 
-    // Assert — create-if-absent 실패 → 재읽기 병합: 두 레이어 모두 생존
-    const doc = fake.jsonOf<LatestDoc>(LATEST_KEY)!;
-    expect(doc.layers.flight?.regions.tokyo).toBeDefined();
-    expect(doc.layers.earthquake?.records).toHaveLength(1);
+    const eq = fake.jsonOf<SnapshotPart<unknown>>(latestLayerKey('earthquake'))!;
+    const tokyo = fake.jsonOf<SnapshotPart<unknown>>(latestFlightRegionKey('tokyo'))!;
+    expect(eq.records).toHaveLength(1);
+    expect(eq.asOf).toBe('2026-08-19T00:01:00.000Z');
+    expect(tokyo.records).toHaveLength(0);
   });
 
   test('단조 갱신: 늦게 끝난 과거 invocation이 최신 스냅샷을 되돌리지 못한다', async () => {
@@ -101,24 +89,31 @@ describe('latest.json CAS (H2 — initial-create race + 단조 갱신)', () => {
     const bucket = asBucket(fake);
     const newer = flight('aaa111', 900, '2026-08-19T00:15:00.000Z');
     const older = flight('bbb222', 720, '2026-08-19T00:12:00.000Z');
+    const key = latestFlightRegionKey('seoul');
 
-    await updateLatest(bucket, setFlightRegionLatest('seoul', [newer], '2026-08-19T00:15:05.000Z'));
+    expect(await putSnapshotIfNewer(bucket, key, '2026-08-19T00:15:05.000Z', [newer])).toBe(true);
     const putsAfterNewer = fake.putCount;
 
-    // 과거 asOf로 덮어쓰기 시도 — 쓰기 자체가 스킵되어야 한다
-    await updateLatest(bucket, setFlightRegionLatest('seoul', [older], '2026-08-19T00:12:05.000Z'));
+    // 과거 asOf로 덮어쓰기 시도 — 쓰기 자체가 스킵되어야 한다 (head 가드, 본문 parse 없음)
+    expect(await putSnapshotIfNewer(bucket, key, '2026-08-19T00:12:05.000Z', [older])).toBe(false);
     expect(fake.putCount).toBe(putsAfterNewer);
 
-    const doc = fake.jsonOf<LatestDoc>(LATEST_KEY)!;
-    expect(doc.layers.flight?.regions.seoul?.asOf).toBe('2026-08-19T00:15:05.000Z');
-    expect(doc.layers.flight?.regions.seoul?.records[0]?.entityId).toBe('aaa111');
+    const part = fake.jsonOf<SnapshotPart<FlightRecord>>(key)!;
+    expect(part.asOf).toBe('2026-08-19T00:15:05.000Z');
+    expect(part.records[0]?.entityId).toBe('aaa111');
+
+    // 같은 asOf 재처리(news 같은 파일 재처리 시나리오)도 스킵
+    expect(await putSnapshotIfNewer(bucket, key, '2026-08-19T00:15:05.000Z', [older])).toBe(false);
 
     // earthquake도 동일 규칙
-    await updateLatest(bucket, setEarthquakeLatest([quake('q1', '2026-08-19T00:10:00.000Z')], '2026-08-19T00:14:00.000Z'));
-    await updateLatest(bucket, setEarthquakeLatest([], '2026-08-19T00:13:00.000Z'));
-    const doc2 = fake.jsonOf<LatestDoc>(LATEST_KEY)!;
-    expect(doc2.layers.earthquake?.asOf).toBe('2026-08-19T00:14:00.000Z');
-    expect(doc2.layers.earthquake?.records).toHaveLength(1);
+    const eqKey = latestLayerKey('earthquake');
+    await putSnapshotIfNewer(bucket, eqKey, '2026-08-19T00:14:00.000Z', [
+      quake('q1', '2026-08-19T00:10:00.000Z'),
+    ]);
+    await putSnapshotIfNewer(bucket, eqKey, '2026-08-19T00:13:00.000Z', []);
+    const eq = fake.jsonOf<SnapshotPart<unknown>>(eqKey)!;
+    expect(eq.asOf).toBe('2026-08-19T00:14:00.000Z');
+    expect(eq.records).toHaveLength(1);
   });
 });
 

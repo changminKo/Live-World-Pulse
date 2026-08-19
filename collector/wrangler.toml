@@ -3,6 +3,8 @@
 name = "lwp-collector"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
+# node:zlib 동기 gzip (CPU 사다리 — CompressionStream 대비 6배, gzip.ts 헤더 참조)
+compatibility_flags = ["nodejs_compat"]
 
 # cron trigger 1개만 사용 (무료 5개 한도 — PLAN §8.7)
 [triggers]

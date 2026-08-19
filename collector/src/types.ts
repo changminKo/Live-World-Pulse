@@ -1,13 +1,16 @@
 /** 데이터 모델은 shared 계약(PLAN §5 전문)에서 승격·공유 — 여기는 재수출 + collector 고유 타입만.
- *  Phase 0a 실구현 레이어는 earthquake + flight 부분집합 (NormRecord). */
+ *  Phase 1: 4레이어 전부 수집 (NormRecord = WorldRecord로 수렴 완료). */
 export type {
   EarthquakePayload,
   EarthquakeRecord,
   FlightRecord,
   FlightStatePayload,
   Geometry,
+  Interval,
   Iso,
   LayerId,
+  NewsPayload,
+  NewsRecord,
   Observation,
   Occurrence,
   Position,
@@ -15,12 +18,14 @@ export type {
   Severity,
   SeverityRank,
   Source,
+  WeatherAlertPayload,
+  WeatherAlertRecord,
   WorldRecord,
 } from '@lwp/shared';
-import type { EarthquakeRecord, FlightRecord } from '@lwp/shared';
+import type { WorldRecord } from '@lwp/shared';
 
-/** Phase 0a 수집 대상 부분집합 — weather/news 어댑터 추가 시 WorldRecord로 수렴 */
-export type NormRecord = EarthquakeRecord | FlightRecord;
+/** Phase 0a에는 earthquake+flight 부분집합이었다 — Phase 1에서 전 레이어로 수렴 */
+export type NormRecord = WorldRecord;
 
 export interface Env {
   DATA: R2Bucket;

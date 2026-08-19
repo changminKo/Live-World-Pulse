@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { REGIONS, regionsForMinute } from '../src/schedule';
+import {
+  REGIONS,
+  isNewsMinute,
+  isNewsProcessMinute,
+  isWeatherCommitMinute,
+  isWeatherMinute,
+  regionsForMinute,
+} from '../src/schedule';
 
 describe('스케줄 배분 (m%3 — PLAN §8.7)', () => {
   // 2026-08-19T00:00:00Z = 1755561600000 — 분 단위 정렬 기준점
@@ -35,6 +42,47 @@ describe('스케줄 배분 (m%3 — PLAN §8.7)', () => {
     const [a1, b1] = regionsForMinute(t);
     const [a2, b2] = regionsForMinute(t + 3 * MIN);
     expect([a1.id, b1.id]).toEqual([a2.id, b2.id]);
+  });
+
+  test('weather 슬롯 m%15==2 / news 슬롯 m%15==9 — 서로 다른 분에 분산', () => {
+    const t = (minute: number) => Date.UTC(2026, 7, 19, 12, minute, 0);
+
+    expect(isWeatherMinute(t(2))).toBe(true);
+    expect(isWeatherMinute(t(17))).toBe(true);
+    expect(isWeatherMinute(t(9))).toBe(false);
+    expect(isNewsMinute(t(9))).toBe(true);
+    expect(isNewsMinute(t(24))).toBe(true);
+    expect(isNewsMinute(t(2))).toBe(false);
+
+    // 한 시간 내 어떤 분에도 weather·news가 같은 invocation에 겹치지 않는다
+    for (let m = 0; m < 60; m += 1) {
+      expect(isWeatherMinute(t(m)) && isNewsMinute(t(m))).toBe(false);
+    }
+  });
+
+  test('CPU 분할 슬롯 — fetch/커밋 4슬롯이 서로·capacity scan(m%15==7)과 비겹침, 무거운 지역쌍(m%3==1) 회피', () => {
+    const t = (minute: number) => Date.UTC(2026, 7, 19, 12, minute, 0);
+
+    expect(isWeatherCommitMinute(t(5))).toBe(true);
+    expect(isWeatherCommitMinute(t(20))).toBe(true);
+    expect(isNewsProcessMinute(t(11))).toBe(true);
+    expect(isNewsProcessMinute(t(26))).toBe(true);
+
+    for (let m = 0; m < 60; m += 1) {
+      const due = [
+        isWeatherMinute(t(m)),
+        isWeatherCommitMinute(t(m)),
+        isNewsMinute(t(m)),
+        isNewsProcessMinute(t(m)),
+      ].filter(Boolean).length;
+      // 한 분에 weather/news 작업은 최대 1개 + 커밋 슬롯은 daily scan 분(m%15==7)과 비겹침
+      expect(due).toBeLessThanOrEqual(1);
+      if (due === 1) expect(m % 15).not.toBe(7);
+      // 커밋(무거운 파싱) 분은 런던·프랑크푸르트(m%3==1) 분을 피한다
+      if (isWeatherCommitMinute(t(m)) || isNewsProcessMinute(t(m))) {
+        expect(m % 3).not.toBe(1);
+      }
+    }
   });
 
   test('6지역 좌표가 PLAN §8.7 계약과 일치', () => {
