@@ -541,6 +541,12 @@ dev 오버레이 (FPS·객체 수·attribute 생성 시간·워커 큐)를 30분
 전 단계:     $0 — Cloudflare 단일 (Workers Cron 무료 + R2 무료 10GB-월 + Pages 무료)
              retention 정책(§8.6: raw 7일 롤링, norm 90일 롤링 삭제)으로 무료 한도 안 상주 유지 (fail-safe 8GB 도달 추정 ~3.8년 — 도달 전 재검토)
 유료 트리거: ① Workers CPU 한도 초과 (Paid $5/월 — 폴백 사다리 소진 + 사용자 승인 시에만) ② R2 상주 8GB 도달 (fail-safe = 수집 일시 정지, §8.6)
+
+**과금 절대 방지 가드라인 (2026-08-19 확정)**
+1. Workers·Pages = Free 플랜 고정. Free는 hard cap이라 과금 자체가 불가능 — 한도 초과 시 1027로 멈추는 것이 설계된 동작. 플랜 업그레이드는 어떤 자동화로도 금지.
+2. R2 = 유일한 과금 표면 (결제수단 등록됨). 3중 방어: lifecycle 롤링(raw 7d·norm 90d) → daily scan 실측 기록 → 8GB 도달 시 수집 정지. 과금 전에 반드시 삭제·정지가 선행.
+3. 사용자 대시보드 알림 (수동 1회 설정 권장): Notifications → R2 storage usage + Billing 알림.
+4. wrangler·API로 결제/플랜 엔드포인트 호출 금지 — CLAUDE.md 하드 룰.
              — 둘 다 발생 시 과금 전 축소가 우선, 과금은 사용자 명시 승인 필요
 ```
 
