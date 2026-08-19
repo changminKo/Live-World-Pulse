@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   CAPACITY_LIMIT_BYTES,
+  DAILY_INVOCATION_BUDGET,
   isHalted,
   isScanSlot,
   runDailyCapacityScan,
+  runPollRelaxScan,
 } from '../src/r2/capacity';
+import { POLL_RELAX_KEY } from '../src/proxy';
 import { HALT_KEY, capacityKey } from '../src/slots';
 import { FakeR2, asBucket } from './fake-r2';
 import type { CapacityRecord } from '../src/r2/capacity';
@@ -78,6 +81,89 @@ describe('daily capacity scan (H4 — §8.6 fail-safe)', () => {
 
     expect(record.overLimit).toBe(false);
     expect(fake.store.has(HALT_KEY)).toBe(false);
+  });
+});
+
+describe('poll-relax producer (리뷰 Med3 — §8.6 quota 방어 ① end-to-end)', () => {
+  const T = Date.UTC(2026, 7, 19, 3, 7, 0);
+  const CREDS = { CF_API_TOKEN: 'tok', CF_ACCOUNT_ID: 'acct' };
+
+  function analyticsFetch(requests: number, capture?: { body?: string; auth?: string }): typeof fetch {
+    return (async (input: unknown, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.cloudflare.com/client/v4/graphql');
+      if (capture) {
+        capture.body = String(init?.body);
+        capture.auth = String((init?.headers as Record<string, string>).Authorization);
+      }
+      return new Response(
+        JSON.stringify({
+          data: {
+            viewer: { accounts: [{ workersInvocationsAdaptive: [{ sum: { requests } }] }] },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+  }
+
+  test('전일 invocation 80% 초과 → POLL_RELAX_KEY PUT (전일 UTC 날짜로 조회)', async () => {
+    const fake = new FakeR2();
+    const capture: { body?: string; auth?: string } = {};
+    const result = await runPollRelaxScan(asBucket(fake), CREDS, T, analyticsFetch(85_000, capture));
+    expect(result).toEqual({ status: 'relaxed', date: '2026-08-18', requests: 85_000 });
+    expect(capture.auth).toBe('Bearer tok');
+    expect(capture.body).toContain('"date":"2026-08-18"'); // 전일 UTC
+    expect(capture.body).not.toContain('scriptName'); // 계정 전체 합계 조회 (재리뷰: 100k/day는 계정 한도)
+    const flag = fake.jsonOf<{ requests: number; budget: number }>(POLL_RELAX_KEY)!;
+    expect(flag.requests).toBe(85_000);
+    expect(flag.budget).toBe(DAILY_INVOCATION_BUDGET);
+  });
+
+  test('80% 미만 → 기존 플래그 DELETE로 해제', async () => {
+    const fake = new FakeR2();
+    fake.seed(POLL_RELAX_KEY, '{}');
+    const result = await runPollRelaxScan(asBucket(fake), CREDS, T, analyticsFetch(50_000));
+    expect(result).toEqual({ status: 'cleared', date: '2026-08-18', requests: 50_000 });
+    expect(fake.store.has(POLL_RELAX_KEY)).toBe(false);
+  });
+
+  test('정확히 80% = 아직 완화 아님 (경계값)', async () => {
+    const fake = new FakeR2();
+    const result = await runPollRelaxScan(asBucket(fake), CREDS, T, analyticsFetch(80_000));
+    expect(result.status).toBe('cleared');
+    expect(fake.store.has(POLL_RELAX_KEY)).toBe(false);
+  });
+
+  test('시크릿 미설정 → skipped, 플래그·외부 fetch 불변 (지금 프로덕션 상태)', async () => {
+    const fake = new FakeR2();
+    fake.seed(POLL_RELAX_KEY, '{}');
+    const neverFetch = (async () => {
+      throw new Error('must not fetch without credentials');
+    }) as typeof fetch;
+    expect(await runPollRelaxScan(asBucket(fake), {}, T, neverFetch)).toEqual({
+      status: 'skipped',
+      reason: 'missing-credentials',
+    });
+    expect(await runPollRelaxScan(asBucket(fake), { CF_API_TOKEN: 'tok' }, T, neverFetch)).toEqual({
+      status: 'skipped',
+      reason: 'missing-credentials',
+    });
+    expect(fake.store.has(POLL_RELAX_KEY)).toBe(true); // 불변
+  });
+
+  test('Analytics 실패(HTTP·GraphQL 오류) → error + 플래그 불변 (이미 선 완화 유지)', async () => {
+    const fake = new FakeR2();
+    fake.seed(POLL_RELAX_KEY, '{}');
+    const http500 = (async () => new Response('down', { status: 500 })) as typeof fetch;
+    const r1 = await runPollRelaxScan(asBucket(fake), CREDS, T, http500);
+    expect(r1.status).toBe('error');
+    const gqlError = (async () =>
+      new Response(JSON.stringify({ data: null, errors: [{ message: 'quota' }] }), {
+        status: 200,
+      })) as typeof fetch;
+    const r2 = await runPollRelaxScan(asBucket(fake), CREDS, T, gqlError);
+    expect(r2.status).toBe('error');
+    expect(fake.store.has(POLL_RELAX_KEY)).toBe(true); // 어느 실패에도 불변
   });
 });
 

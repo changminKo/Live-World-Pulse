@@ -4,6 +4,7 @@
  *  ② 실측 8GB 초과 시 halt 플래그 PUT → 이후 invocation은 수집 스킵 (자동 과금 차단).
  *     해제는 수동 삭제만 (wrangler r2 object delete lwp-data/manifest/halt.json). */
 import { HALT_KEY, capacityKey, dtOf } from '../slots';
+import { POLL_RELAX_KEY } from '../proxy';
 import { putIfAbsent } from './norm';
 
 export const CAPACITY_LIMIT_BYTES = 8 * 1024 ** 3; // 8GB — §8.6 fail-safe 선
@@ -99,6 +100,103 @@ export async function runDailyCapacityScan(
   await putIfAbsent(bucket, FORMAT_TRANSITION_KEY, FORMAT_TRANSITION_BODY);
 
   return record;
+}
+
+/** §8.6 quota 방어 ① producer (리뷰 Med3) — daily scan에서 전일 Worker invocation을
+ *  Cloudflare GraphQL Analytics로 조회해 무료 예산(100k/day) 80% 초과면 POLL_RELAX_KEY
+ *  PUT(프록시가 X-Poll-Interval: 180 지시), 미만이면 DELETE로 해제.
+ *  - CF_API_TOKEN·CF_ACCOUNT_ID 미설정: 로그만 남기고 스킵 (지금은 미등록 — 코드만 준비).
+ *  - Analytics 조회 실패: 플래그 불변 — 일시 장애로 이미 선 완화를 풀지 않는다 (fail-safe 방향). */
+export const DAILY_INVOCATION_BUDGET = 100_000;
+export const POLL_RELAX_THRESHOLD = 0.8;
+const CF_GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql';
+const ANALYTICS_TIMEOUT_MS = 10_000;
+
+export type PollRelaxResult =
+  | { status: 'skipped'; reason: 'missing-credentials' }
+  | { status: 'relaxed' | 'cleared'; date: string; requests: number }
+  | { status: 'error'; error: string };
+
+export interface PollRelaxEnv {
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
+}
+
+export async function runPollRelaxScan(
+  bucket: R2Bucket,
+  env: PollRelaxEnv,
+  nowMs: number,
+  fetchFn: typeof fetch = fetch,
+): Promise<PollRelaxResult> {
+  const token = env.CF_API_TOKEN;
+  const account = env.CF_ACCOUNT_ID;
+  if (!token || !account) return { status: 'skipped', reason: 'missing-credentials' };
+
+  const date = dtOf(Math.floor(nowMs / 1_000) - 86_400); // 전일 UTC
+  try {
+    const requests = await fetchDailyInvocations(fetchFn, token, account, date);
+    if (requests > DAILY_INVOCATION_BUDGET * POLL_RELAX_THRESHOLD) {
+      await bucket.put(
+        POLL_RELAX_KEY,
+        JSON.stringify({
+          date,
+          requests,
+          budget: DAILY_INVOCATION_BUDGET,
+          threshold: POLL_RELAX_THRESHOLD,
+          setAt: new Date(nowMs).toISOString(),
+        }),
+      );
+      return { status: 'relaxed', date, requests };
+    }
+    await bucket.delete(POLL_RELAX_KEY);
+    return { status: 'cleared', date, requests };
+  } catch (error: unknown) {
+    return { status: 'error', error: String(error) };
+  }
+}
+
+interface InvocationsQueryResponse {
+  data?: {
+    viewer?: {
+      accounts?: Array<{
+        workersInvocationsAdaptive?: Array<{ sum?: { requests?: number } }>;
+      }>;
+    };
+  };
+  errors?: Array<{ message?: string }> | null;
+}
+
+async function fetchDailyInvocations(
+  fetchFn: typeof fetch,
+  token: string,
+  account: string,
+  date: string,
+): Promise<number> {
+  // 스크립트 필터 없이 계정 전체 합계 — Workers Free 100k/day는 계정 한도라
+  // 같은 계정의 다른 Worker·Pages Functions 사용량까지 포함해야 80% 판정이 보수적으로 맞다.
+  const query = `query LwpDailyInvocations($accountTag: string!, $date: string!) {
+  viewer {
+    accounts(filter: { accountTag: $accountTag }) {
+      workersInvocationsAdaptive(limit: 1000, filter: { date: $date }) {
+        sum { requests }
+      }
+    }
+  }
+}`;
+  const res = await fetchFn(CF_GRAPHQL_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables: { accountTag: account, date } }),
+    signal: AbortSignal.timeout(ANALYTICS_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`analytics http ${res.status}`);
+  const body = (await res.json()) as InvocationsQueryResponse;
+  if (body.errors && body.errors.length > 0) {
+    throw new Error(`analytics graphql: ${body.errors[0]?.message ?? 'unknown'}`);
+  }
+  const groups = body.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive;
+  if (!groups) throw new Error('analytics response missing workersInvocationsAdaptive');
+  return groups.reduce((total, g) => total + (g.sum?.requests ?? 0), 0);
 }
 
 async function sumPrefix(bucket: R2Bucket, prefix: string): Promise<PrefixUsage> {

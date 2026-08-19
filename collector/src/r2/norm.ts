@@ -19,12 +19,13 @@ import { manifestEntryKey, manifestSlotPrefix, normKey, normPointerKey, normSlot
 import type { SlotFileBody as SharedSlotFileBody } from '@lwp/shared';
 import type { LayerId, NormRecord } from '../types';
 
-interface SlotPointer {
+export interface SlotPointer {
   g: number;
   hash: string;
 }
 
-interface PointerShard {
+/** 포인터 shard 본문 — 읽기 프록시(proxy.ts /api/manifest·norm resolve)와 공유 */
+export interface PointerShard {
   layers: Record<string, Record<string, SlotPointer>>;
 }
 

@@ -19,3 +19,5 @@ enabled = true
 # 시크릿 (wrangler secret put — .env 커밋 금지, PLAN §10 운영):
 #   HEALTHCHECKS_URL — healthchecks.io 핑 URL. 없으면 조용히 스킵.
 #   GATE_TOKEN — /__gates/* 실측 게이트 인증 (x-gate-token 헤더). 미설정 시 게이트 전체 404 (fail-closed).
+#   CF_API_TOKEN — GraphQL Analytics 읽기 토큰 (Account Analytics:Read). poll-relax scan용 (§8.6 quota 방어 ①).
+#   CF_ACCOUNT_ID — 계정 태그 (대시보드 URL의 32자리 hex). CF_API_TOKEN과 함께 있어야 scan 동작, 미설정 시 스킵.

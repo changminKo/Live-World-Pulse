@@ -27,4 +27,7 @@ export interface Env {
   HEALTHCHECKS_URL?: string;
   /** /__gates/* 인증 시크릿 — 미설정 시 게이트 전체 404 (fail-closed) */
   GATE_TOKEN?: string;
+  /** daily poll-relax scan용 GraphQL Analytics 자격 (§8.6 quota 방어 ①) — 둘 다 있어야 동작, 미설정 시 스킵 */
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
 }
