@@ -1,0 +1,202 @@
+@import 'tailwindcss';
+
+/* ─── DESIGN.md §7 CSS 토큰 (확정 hex — WCAG AA 검증 완료) ─── */
+:root {
+  /* 배경 계층 — bg-0 = OpenFreeMap dark bg와 동일 */
+  --bg-0: #0c0c0c;
+  --bg-1: #141414;
+  --bg-2: #1e1e1e;
+  --border: #262626;
+
+  /* 텍스트 2단 — 최악 배경(#1e1e1e) 기준 AA 통과 */
+  --text-hi: #e8e8e8; /* 13.61:1 */
+  --text-lo: #9e9e9e; /*  6.22:1 */
+
+  /* 시맨틱 레이어 기준색 — 범례·로그·배지 (마커는 아래 rank 스케일) */
+  --layer-quake: #ff8a4c; /* 지진, 7.14:1 */
+  --layer-alert: #ff5c5c; /* 기상 경보, 5.51:1 */
+  --layer-flight: #4cc9f0; /* 항공기, 8.67:1 */
+  --layer-news: #ffd166; /* 뉴스, 11.56:1 */
+
+  /* severity rank 0~4 마커 스케일 (DESIGN §2.2 — 전부 ≥4.5:1 vs #1e1e1e) */
+  --quake-r0: #f15400; --quake-r1: #ff6818; --quake-r2: #ff813e;
+  --quake-r3: #ff9963; --quake-r4: #ffb289;
+  --alert-r0: #ff3d3d; --alert-r1: #ff5454; --alert-r2: #ff6b6b;
+  --alert-r3: #ff8282; --alert-r4: #ff9999;
+  --flight-r0: #1094bd; --flight-r1: #13b3e4; --flight-r2: #35c2ee;
+  --flight-r3: #5dcef1; --flight-r4: #84daf5;
+  --news-r0: #b57f00; --news-r1: #f0a800; --news-r2: #ffc02d;
+  --news-r3: #ffd268; --news-r4: #ffe3a3;
+
+  /* 상태색 */
+  --status-live: #3ddc97; /* ● LIVE, 9.43:1 */
+  --status-stale: #fbbf24; /* ◐ 지연, 9.99:1 */
+
+  /* 타이포 */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --text-xs: 11px; --text-sm: 12px; --text-md: 14px;
+  --text-lg: 18px; --text-xl: 24px;
+
+  /* 간격 — 4px 그리드 */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+
+  /* 모션 */
+  --dur-fast: 150ms; --dur-pulse: 1200ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --radius: 4px; /* 최대값 */
+}
+
+/* self-host woff2 21.2KB (subset latin — DESIGN §3 상한 50KB 통과).
+   swap: 폰트 로딩이 수치 표시를 블로킹하지 않는다. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-latin-400.woff2') format('woff2');
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 수치·좌표·시간 전용 — 자릿수 흔들림 금지 (DESIGN §3) */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── 우주 배경 — 지구본 밖 여백 (globe projection은 구 밖이 투명).
+   단색 + 별 점묘만 — 장식용 그라데이션 금지 (DESIGN §6). ─── */
+.space-bg {
+  background: var(--bg-0);
+}
+
+.space-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* 결정론 별 90개 — 1px 점, box-shadow 단일 노드 (컴포지터 부담 0) */
+  width: 1px;
+  height: 1px;
+  border-radius: 50%;
+  box-shadow:
+    58.2vw 52vh 0 0 rgba(232, 232, 232, 0.75),
+    69.9vw 75.3vh 0 0 rgba(232, 232, 232, 0.63),
+    52.1vw 15.2vh 0 0 rgba(232, 232, 232, 0.28),
+    22.6vw 28.7vh 0 0 rgba(232, 232, 232, 0.8),
+    71vw 67.1vh 0 0 rgba(232, 232, 232, 0.45),
+    25.6vw 10.5vh 0 0 rgba(232, 232, 232, 0.74),
+    85vw 84vh 0 0 rgba(232, 232, 232, 0.5),
+    28.1vw 84.2vh 0 0 rgba(232, 232, 232, 0.28),
+    76.6vw 96.3vh 0 0 rgba(232, 232, 232, 0.69),
+    11.5vw 33.7vh 0 0 rgba(232, 232, 232, 0.61),
+    5.6vw 26.9vh 0 0 rgba(232, 232, 232, 0.53),
+    76.8vw 27.1vh 0 0 rgba(232, 232, 232, 0.53),
+    0.3vw 57.7vh 0 0 rgba(232, 232, 232, 0.56),
+    65.1vw 70.2vh 0 0 rgba(232, 232, 232, 0.72),
+    81.3vw 23vh 0 0 rgba(232, 232, 232, 0.71),
+    42.8vw 91.8vh 0 0 rgba(232, 232, 232, 0.33),
+    84.6vw 29vh 0 0 rgba(232, 232, 232, 0.26),
+    48.9vw 2.6vh 0 0 rgba(232, 232, 232, 0.33),
+    93.7vw 24.1vh 0 0 rgba(232, 232, 232, 0.43),
+    61.4vw 73.3vh 0 0 rgba(232, 232, 232, 0.57),
+    80.7vw 60.8vh 0 0 rgba(232, 232, 232, 0.59),
+    8.9vw 26.9vh 0 0 rgba(232, 232, 232, 0.29),
+    90vw 97.6vh 0 0 rgba(232, 232, 232, 0.38),
+    81.4vw 22.2vh 0 0 rgba(232, 232, 232, 0.48),
+    7.2vw 2.6vh 0 0 rgba(232, 232, 232, 0.33),
+    35.6vw 54.3vh 0 0 rgba(232, 232, 232, 0.8),
+    42.4vw 38vh 0 0 rgba(232, 232, 232, 0.45),
+    63vw 41.6vh 0 0 rgba(232, 232, 232, 0.26),
+    75.7vw 43.2vh 0 0 rgba(232, 232, 232, 0.71),
+    17.1vw 68.2vh 0 0 rgba(232, 232, 232, 0.54),
+    76.4vw 62.9vh 0 0 rgba(232, 232, 232, 0.52),
+    41.8vw 23.4vh 0 0 rgba(232, 232, 232, 0.26),
+    32.9vw 54vh 0 0 rgba(232, 232, 232, 0.41),
+    98.8vw 82.4vh 0 0 rgba(232, 232, 232, 0.58),
+    9.9vw 95.3vh 0 0 rgba(232, 232, 232, 0.57),
+    59.5vw 12.5vh 0 0 rgba(232, 232, 232, 0.3),
+    83.1vw 67vh 0 0 rgba(232, 232, 232, 0.51),
+    78vw 64.4vh 0 0 rgba(232, 232, 232, 0.73),
+    33.7vw 12.8vh 0 0 rgba(232, 232, 232, 0.5),
+    6.8vw 90.4vh 0 0 rgba(232, 232, 232, 0.44),
+    70.8vw 50.8vh 0 0 rgba(232, 232, 232, 0.29),
+    9.1vw 53.8vh 0 0 rgba(232, 232, 232, 0.5),
+    95.1vw 3vh 0 0 rgba(232, 232, 232, 0.77),
+    93.6vw 61vh 0 0 rgba(232, 232, 232, 0.59),
+    52.4vw 46.1vh 0 0 rgba(232, 232, 232, 0.53),
+    23.2vw 21.9vh 0 0 rgba(232, 232, 232, 0.3),
+    33.2vw 99.1vh 0 0 rgba(232, 232, 232, 0.6),
+    23.1vw 70.2vh 0 0 rgba(232, 232, 232, 0.41),
+    70.7vw 88.5vh 0 0 rgba(232, 232, 232, 0.39),
+    6.4vw 54.6vh 0 0 rgba(232, 232, 232, 0.67),
+    64.2vw 24.1vh 0 0 rgba(232, 232, 232, 0.67),
+    93.9vw 17vh 0 0 rgba(232, 232, 232, 0.27),
+    24.3vw 18.1vh 0 0 rgba(232, 232, 232, 0.5),
+    24.1vw 77vh 0 0 rgba(232, 232, 232, 0.39),
+    5.6vw 20vh 0 0 rgba(232, 232, 232, 0.44),
+    4.4vw 81.8vh 0 0 rgba(232, 232, 232, 0.26),
+    87.4vw 7.2vh 0 0 rgba(232, 232, 232, 0.64),
+    19.4vw 77.9vh 0 0 rgba(232, 232, 232, 0.42),
+    37.9vw 55vh 0 0 rgba(232, 232, 232, 0.48),
+    69.3vw 72.1vh 0 0 rgba(232, 232, 232, 0.62),
+    41vw 31.2vh 0 0 rgba(232, 232, 232, 0.58),
+    79.2vw 91.5vh 0 0 rgba(232, 232, 232, 0.47),
+    5.4vw 7.3vh 0 0 rgba(232, 232, 232, 0.74),
+    55.7vw 57.3vh 0 0 rgba(232, 232, 232, 0.74),
+    82.4vw 83.5vh 0 0 rgba(232, 232, 232, 0.73),
+    5vw 39.4vh 0 0 rgba(232, 232, 232, 0.47),
+    3.7vw 47.3vh 0 0 rgba(232, 232, 232, 0.62),
+    61.4vw 84.3vh 0 0 rgba(232, 232, 232, 0.62),
+    66.4vw 2.4vh 0 0 rgba(232, 232, 232, 0.7),
+    56.5vw 30.7vh 0 0 rgba(232, 232, 232, 0.34),
+    16.8vw 1.8vh 0 0 rgba(232, 232, 232, 0.35),
+    70.6vw 7.6vh 0 0 rgba(232, 232, 232, 0.34),
+    68.7vw 13vh 0 0 rgba(232, 232, 232, 0.35),
+    0.4vw 14.6vh 0 0 rgba(232, 232, 232, 0.71),
+    74.7vw 34.9vh 0 0 rgba(232, 232, 232, 0.46),
+    68.7vw 38.1vh 0 0 rgba(232, 232, 232, 0.59),
+    82.5vw 66.6vh 0 0 rgba(232, 232, 232, 0.48),
+    0.5vw 4.5vh 0 0 rgba(232, 232, 232, 0.27),
+    35.4vw 52vh 0 0 rgba(232, 232, 232, 0.35),
+    74.6vw 68.9vh 0 0 rgba(232, 232, 232, 0.46),
+    9.4vw 27.8vh 0 0 rgba(232, 232, 232, 0.48),
+    72.2vw 16.3vh 0 0 rgba(232, 232, 232, 0.6),
+    85.2vw 44.1vh 0 0 rgba(232, 232, 232, 0.73),
+    12.5vw 69.9vh 0 0 rgba(232, 232, 232, 0.31),
+    97.3vw 52.3vh 0 0 rgba(232, 232, 232, 0.66),
+    30.4vw 58.1vh 0 0 rgba(232, 232, 232, 0.64),
+    96vw 6.7vh 0 0 rgba(232, 232, 232, 0.29),
+    53.2vw 30.1vh 0 0 rgba(232, 232, 232, 0.44),
+    19.6vw 62.2vh 0 0 rgba(232, 232, 232, 0.35),
+    26.2vw 57.5vh 0 0 rgba(232, 232, 232, 0.48);
+}
+
+/* maplibre 캔버스 — 구 밖 투명 유지 (space-bg가 비쳐야 함) */
+.maplibregl-map {
+  background: transparent;
+}
+
+.maplibregl-canvas {
+  outline: none;
+}
+
+/* maplibre가 tabindex=0을 부여한 캔버스 — 키보드 포커스 가시화 (WCAG 2.4.7) */
+.maplibregl-canvas:focus-visible {
+  outline: 2px solid var(--layer-flight);
+  outline-offset: -2px;
+}
