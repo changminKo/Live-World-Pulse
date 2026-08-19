@@ -25,7 +25,7 @@ DevTools 은유를 완성하는 3요소:
 
 ### 포지셔닝 (정직한 서술)
 
-- ~~"Realtime"~~ → **"Live Data Integration"**. 소스 최선 해상도가 항공기 지역당 3분 / 지진 60초 / 뉴스 15분이므로 초 단위 실시간을 주장하지 않는다. `● LIVE` 표시는 "최신 가용 스냅샷"을 뜻하며, 6분(항공기 2주기) 이상 갱신이 없으면 `◐ 지연`으로 강등한다.
+- ~~"Realtime"~~ → **"Live Data Integration"**. 수집 해상도가 항공기 지역당 10분 / 지진 20분(수집) / 뉴스 15분 / 기상 60분이므로 초 단위 실시간을 주장하지 않는다 (2026-08-19 CPU 사다리 발동 결과 — §8.7). 프론트는 지진을 USGS에서 60초 직접 폴링하므로 지진 표시 해상도는 60초. `● LIVE`는 "최신 가용 스냅샷"을 뜻하며, 항공기 20분(2주기) 무갱신 시 `◐ 지연`으로 강등한다.
 - ~~"수만~수십만 이벤트"~~ → **"동시 ~2만 마커 + 24시간 궤적 재생"**. 실측 동시 데이터는 항공기 ~1만 + 지진 수백 + 뉴스 수천. 십만 급은 궤적 히스토리 렌더로 달성하며, 주장 시 측정 환경·fps를 병기한다.
 
 ---
@@ -96,7 +96,7 @@ DevTools 은유를 완성하는 3요소:
 |---|---|---|
 | 수치 (기온·강수·풍속) | Open-Meteo | 무키, 10,000 call/day, past_days 92일 |
 | 경보 (전 지구) | WMO Alert Hub CAP 레지스트리 + NWS(미국 상세) | NWS는 `User-Agent` 필수. CAP `Minor/Moderate/Severe/Extreme` 등급을 severity rank로 직결 |
-| 태풍·재난 트랙 | **GDACS** (UN/EC, 다재해 GeoJSON) | ✅ 실측 확정 (2026-08-18): 무인증, 6개 엔드포인트 전부 200. TC 트랙 = getgeometry의 LineString (forecast:true/false 구분, 6h 간격 트랙포인트 + 불확실성 콘 + 풍역 폴리곤). 서태평양 태풍 커버 확인 (JEBI-18 일본 등). 에피소드 단위 시점 스냅샷 = Time Machine 요건 충족. Green/Orange/Red → severity rank 매핑 |
+| 태풍·재난 트랙 | **GDACS** (UN/EC, 다재해 GeoJSON) | ✅ 실측 확정 (2026-08-18): 무인증, 6개 엔드포인트 전부 200. TC 트랙 = getgeometry의 트랙포인트(소형 Polygon) centroid를 이은 LineString + 불확실성 콘(`Poly_Cones`) + 풍역 폴리곤(`Poly_Red/Orange/Green`). 서태평양 태풍 커버 확인. 에피소드 단위 시점 스냅샷 = Time Machine 요건 충족. Green/Orange/Red → severity rank 매핑. **구현 범위 (2026-08-19): TC만 트랙 + 콘.** getgeometry는 이벤트당 1콜이라 활성 400여 건 전체의 영역 폴리곤은 $0·10ms 예산에 들어가지 않는다 — 비TC 경보(홍수·산불 등)는 Point이고 영역 폴리곤은 **백로그**다. 풍역 폴리곤도 미사용 |
 
 - **서태평양(일본) 태풍 경보 무료 API는 없다** (NHC는 대서양/동태평양만, JMA는 기계판독 API 부재). 태풍 데모는 GDACS 트랙 기반으로 구성한다 — 실측으로 성립 확인됨.
 - GDACS 구현 주의 2건 (실측): SEARCH 기본이 Orange/Red만 반환 → `alertlevel=Green;Orange;Red` 명시 필요. 트랙포인트가 Point가 아닌 소형 Polygon → centroid 추출 필요. 응답 크기: 트랙 225~288KB, MAP 전종류 1.1MB → lazy fetch.
@@ -115,7 +115,8 @@ DevTools 은유를 완성하는 3요소:
 **채택: adsb.lol 지역 한정 방식 — ✅ 실측 확정 (2026-08-18).**
 
 - API: `/v2/point/{lat}/{lon}/{radius}` (radius 최대 250nm), ADSBExchange v2 호환, 무인증. 필드 충분 (hex/lat/lon/alt_baro/gs/track/flight/category).
-- **순환 스윕 확정: 6개 지역** — 서울·도쿄·런던·프랑크푸르트·뉴욕·LA. **지역당 3분 주기** (Workers 1분 cron × 분당 2지역 — §8.7 스케줄 계약. 90s보다 완화라 스로틀에 더 안전). 대역폭 사이클당 gzip ~300~400KB.
+- **순환 스윕 확정: 6개 지역** — 서울·도쿄·런던·프랑크푸르트·뉴욕·LA. **지역당 10분 주기** (Workers 1분 cron × 분당 1지역 라운드로빈 — §8.7 스케줄 계약. 최초 90s→3분→10분으로 두 차례 완화됐고, 마지막은 exceededCpu 해소를 위한 CPU 사다리 rung③. adsb.lol 스로틀에는 더 안전). 대역폭 사이클당 gzip ~300~400KB.
+- ⚠ 트레이드오프: 10분 주기는 Time Machine 궤적 보간 품질을 떨어뜨린다 (기존 계약 대비 3.3배 희소). Phase 2에서 보간 tolerance를 20분으로 두고 궤적을 '샘플 점 연결'로 정직 표기하거나, CPU 여유 확보 시 주기 복원을 재검토.
 - rate limit (⚠ 실행 위치별로 다름 — 2026-08-19 배포 실측): 로컬 IP는 소프트 스로틀뿐이나 **Cloudflare Workers 공유 IP는 강한 per-IP 스로틀** — 첫 시도 성공률 ~14%, 429 후 10s 재시도로 40% 회수. 대체 소스는 Workers에서 전멸 (adsb.fi·airplanes.live 403, OpenSky 522 — 각 0/5). **결정 (사용자 승인 2026-08-19): 수용 + 429 10s 재시도 1회** — 실효 수집률 ~30-50%, 갭은 타임라인에 정직 표시. adsb.lol 429는 크레딧 소진이 아니라 스로틀이므로 429 재시도 금지 룰의 명시적 예외.
 - **동아시아 커버리지 공백 실재** (유럽 대비 ~1/8, 피더 밀도 문제. 해양은 구조적으로 0) — UI에서 지역별 커버리지 차이를 정직하게 표기할 것.
 - 히스토리 덤프: 연도별 repo에 수년 보존, 일일 GitHub Release ~3.9GB tar (항공기당 gzip trace JSON). **조건부 백필용** — 지역별 추출 불가라 전 지구 백필엔 과체중. 실시간 API 저장분이 주 소스, 덤프는 갭 메우기·과거 이벤트 온디맨드.
@@ -195,7 +196,9 @@ interface Interval<P> extends RecordBase {
 
 /** (3) Observation — 연속 존재 개체의 시각 t 표본. 항공기, 태풍 중심.
  *  ID 계약 (반복 표본이라 공통 규칙과 다름): sourceId = `${entityId}:${bucketTs}`
- *  (bucketTs = floor(epochSeconds / 180) × 180 — 수집 주기(지역당 3분)와 정렬된 중복 방지 버킷).
+ *  (bucketTs = floor(epochSeconds / 180) × 180 — 3분 버킷. 수집 주기가 10분으로 완화된 뒤에도
+ *   버킷 크기는 유지한다: 버킷은 '중복 방지 해상도'이지 수집 주기가 아니며, 주기를 되돌릴 때
+ *   기존 키와 호환돼야 한다. 10분 주기에서는 지역당 버킷이 드문드문 채워진다.)
  *  따라서 id = `adsblol:7c2ba6:1755540000` 꼴 — 파일 내 레코드 유일 키. */
 interface Observation<P> extends RecordBase {
   kind: 'observation';
@@ -239,7 +242,7 @@ export type WorldRecord =
 - **Phase 2 Timeline**: 서버 히스토리 기반 -24h Seek / Playback / Replay
 - 지진은 예외적으로 Phase 1부터 과거 임의 시점 조회 가능 (USGS API 위임 — 자체 저장 불필요)
 
-레이어별 네이티브 해상도(항공기 지역당 3분, 뉴스 15min)를 UI에 노출한다 — 안 하면 "타임라인이 고장난 것처럼" 보인다. 수집 갭은 스크러버에 회색 밴드로 정직하게 표시한다 (조용히 비우면 "그 시각엔 항공기가 없었다"는 거짓 세계가 된다).
+레이어별 네이티브 해상도(항공기 지역당 10분, 뉴스 15분, 기상 60분 — §8.7 표)를 UI에 노출한다 — 안 하면 "타임라인이 고장난 것처럼" 보인다. 수집 갭은 스크러버에 회색 밴드로 정직하게 표시한다 (조용히 비우면 "그 시각엔 항공기가 없었다"는 거짓 세계가 된다).
 
 ### Time Replay와 보간
 
@@ -382,8 +385,30 @@ Tailwind CSS + CSS 토큰
 
 **이 제품은 과거를 파는 제품이다. Collector 다운 = 그 시간대 영구 손실 (항공기는 소급 불가).**
 
-- 실행: **Cloudflare Workers Cron Trigger** (1분 주기, 무료 계정 cron trigger 최대 5개 — 우리는 1개만 사용). **스케줄 계약: 항공기는 90초가 아니라 '분 단위 3분 사이클'로 재정의** — 분 m%3==0에 지역 1·2, m%3==1에 지역 3·4, m%3==2에 지역 5·6 → 지역당 3분 주기(90s보다 완화, adsb.lol 스로틀에 더 안전. 표시 해상도 계약도 '지역당 3분'으로 갱신). 지진 매분, 뉴스 15분 슬롯. 호출당 지역 2개 = 순차 fetch 2회 + 파싱 — **CPU 예산(10ms)은 invocation당 리셋되므로 분할 단위 = invocation**. CPU 한도 검증·폴백 사다리는 §9 Phase 0a 착수 게이트 참조 (Paid 전환은 사다리 소진 + 사용자 명시 승인 시에만)
-- 멱등성: DB UPSERT 대신 **결정론 파일명** — **`norm/{layer}/dt={date}/slot={slotStart}.g{generation}.json.gz` — 파일 단위 generation versioned key.** `generation`은 슬롯 파일의 재발행 차수로, 레코드별 `revision`(§5 — 파일 안 각 레코드의 원본 정정 카운터)과 **별개**다. 같은 윈도 재실행(내용 불변) = g0 유지, 파일 내 어떤 레코드든 정정 반영 시 g1, g2… 새 키 발행 + manifest 포인터 갱신 — immutable 장기 캐시와 양립. **agg도 동일 규칙** (정정이 집계값을 바꾸므로 unversioned 영구 키 금지). 옛 generation 정리는 경로별로 다름 — **norm 옛 g = 90일 lifecycle에 위임 / agg 옛 g = Collector 명시 DELETE** (순서 고정: 새 g 발행 → 포인터 CAS 성공 → 유예 1h 후 DELETE — 읽기 경합 결손 방지). 항공기 버킷 = floor(epochSeconds/180)×180 (§5 Observation ID 계약과 일치 — 지역당 3분 주기 정렬)
+- 실행: **Cloudflare Workers Cron Trigger** (1분 주기, 무료 cron trigger 최대 5개 중 1개만 사용).
+- **스케줄 계약 (2026-08-19 2차 확정 — CPU 사다리 rung①③ + 사후 리뷰 High1): 분 → 작업 1개 테이블.** 한 invocation은 정확히 한 작업만 수행하고 latest를 byte-concat 조립한다. 시간당 60슬롯 배분:
+
+  | 작업 | 슬롯/시간 | 분 | 주기 | 비고 |
+  |---|---|---|---|---|
+  | flight | 36 | 나머지 전부 | 지역당 10분 | 6지역 라운드로빈, 지역 최대 간격 13분 (tolerance 20분) |
+  | quake | 3 | 0·20·40 | 20분 | norm 커밋은 현재+직전 슬롯만 (all_hour 창 60분이라 유실 없음) |
+  | weather-page | 10 | 6·11·14·22·26·30·36·43·46·51 | 사이클 60분 | **슬롯당 1페이지** fetch + 즉시 정규화 → 청크 |
+  | weather-commit | 1 | 55 | 60분 | 완주 마커 게이트 → 청크 union → TC 트랙·콘 합성 → norm + latest |
+  | weather-track | 1 | 57 | 60분 | tc-index 회전, getgeometry 1건/슬롯 → 트랙·콘 캐시 |
+  | news-fetch / process | 4 + 4 | 2·17·32·47 / 4·19·34·49 | 15분 | GDELT 파일 주기와 동일 |
+  | idle | 1 | 13 | — | capacity scan(03:13 UTC) 자리 |
+
+  페이지 슬롯을 한 덩어리로 붙이지 않고 흩어 놓은 이유: 연속 배치는 그 구간에 flight 슬롯을 없애 특정 지역 재방문 간격을 23분까지 벌렸다(tolerance 20분 초과 = 상시 stale 오탐). schedule 테스트가 "지역 최대 간격 < tolerance" 불변식을 지킨다.
+
+- **2차 분할 사유 (사후 리뷰 High1 — 실측):** 1작업/분으로 바꾼 뒤에도 프로덕션 tail이 weather-commit 26ms · quake 13ms였다 (kill은 없었지만 Free의 **비보장 유예**에 기댄 상태). 원인은 작업 종류별로 달랐다.
+  - weather: GDACS 원문 6~8페이지(810KB+)를 한 invocation에서 gunzip+parse했다 → **페이지 단위로 쪼갰다**. 페이지 슬롯이 가져온 즉시 정규화해 청크로 남기고, 커밋은 정규화된 청크(~200KB)만 읽는다. 파싱 총량은 그대로 1회다(fetch에서 세고 커밋에서 다시 파싱하던 중복 제거).
+  - 페이지 슬롯당 페이지 수는 **1로 확정** — 2페이지를 넣은 첫 배포에서 Green 2장 슬롯이 cpuTime 13ms였다 (2026-08-19 15:07 UTC tail). 1장 ≈ 6.5ms. 대가로 사이클이 30분 → 60분이 됐다 (10페이지 예산 = 실측 수요 8 + 여유 2).
+  - quake: 15분 norm 슬롯 4~5개를 매번 upsert했다(슬롯당 R2 왕복 6회 = 최대 30회) → **현재+직전 슬롯만** 커밋 + 주기 20분. 결과 13ms → 8ms.
+  - news: 이 재설계에서 **새로 드러난 초과 슬롯**이다 (리뷰 표본에 없던 슬롯 — 15:04 tail 19ms, 14:49 tail 27ms). 비용이 GDELT export 행 수에 비례하고(2,200행 ≈ 로컬 4ms, 파일 크기는 우리가 통제하지 못한다) 한 invocation에서 [unzip → 행 집계 → norm → latest]를 모두 한다. 이번 라운드에서 집계 루프를 최적화했다 — 컬럼 룩업 테이블·셀 키 정수화·불필요한 trim 제거·지명 최빈값 집계를 대표 행 채택으로 축소해 **로컬 8.9ms → 4.1ms**. 그래도 큰 파일에서는 10ms를 넘길 수 있다. **정직 표기: news-process는 Free 유예에 의존하는 슬롯으로 남아 있다.** 다음 단계는 weather와 같은 패턴(행 예산 청크 + 진행 마커, 파일당 2슬롯)이고, 슬롯은 news-fetch를 첫 청크 슬롯에 합쳐 확보한다. 관측을 위해 status/로그에 `rows`·`csvBytes`를 남긴다.
+  - 로컬 실측 하네스: `collector/bench/slot-cpu.ts`(`npm run bench:cpu` — 슬롯별 process.cpuUsage, 실 픽스처 주입 가능) + `collector/bench/news-phases.ts`(`npm run bench:news` — 단계별 분해). 로컬:프로덕션 비율은 작업에 따라 1.2~5배로 달라 **절대 게이트가 아니라 회귀 탐지용**이다 (최종 판정은 프로덕션 tail).
+
+- CPU 예산(10ms)은 invocation당 리셋되므로 분할 단위 = invocation. Paid 전환은 사다리 소진 + 사용자 명시 승인 시에만 (과금 절대 룰).
+- 멱등성: DB UPSERT 대신 **결정론 파일명** — **`norm/{layer}/dt={date}/slot={slotStart}.g{generation}.json.gz` — 파일 단위 generation versioned key.** `generation`은 슬롯 파일의 재발행 차수로, 레코드별 `revision`(§5 — 파일 안 각 레코드의 원본 정정 카운터)과 **별개**다. 같은 윈도 재실행(내용 불변) = g0 유지, 파일 내 어떤 레코드든 정정 반영 시 g1, g2… 새 키 발행 + manifest 포인터 갱신 — immutable 장기 캐시와 양립. **agg도 동일 규칙** (정정이 집계값을 바꾸므로 unversioned 영구 키 금지). 옛 generation 정리는 경로별로 다름 — **norm 옛 g = 90일 lifecycle에 위임 / agg 옛 g = Collector 명시 DELETE** (순서 고정: 새 g 발행 → 포인터 CAS 성공 → 유예 1h 후 DELETE — 읽기 경합 결손 방지). 항공기 버킷 = floor(epochSeconds/180)×180 (§5 Observation ID 계약과 일치 — 버킷 크기는 중복 방지 해상도이지 수집 주기가 아니다: 지역당 주기가 10분이 된 뒤에도 180s를 유지한다)
 - 수집 원장 (**원자성 계약**): 윈도별 기록은 immutable 엔트리 `manifest/{layer}/dt={date}/slot={t}.g{generation}.json` — 키에 layer·generation이 들어가므로 재시도(같은 내용·같은 키)와 정정(새 g 키)이 충돌 없이 공존. 슬롯별 최신 generation 포인터는 경로별 분리 — **norm 포인터 = 일 단위 shard** `manifest/pointers/norm/dt={date}.json` (90일 lifecycle 자동 pruning — norm 본체와 수명 일치), **agg 포인터 = 영구 shard** `manifest/pointers/agg/{year}.json` (agg 본체가 영구이므로 포인터도 영구 — 90일 pruning 금지). 양쪽 다 **ETag 조건부 PUT(CAS)**, 충돌 시 재읽기 후 재시도, 전역 단일 객체 금지. 갭 스캔·백필 판정·타임라인 회색 밴드는 immutable 엔트리를 읽는다
 - **갭을 UI에 노출** (타임라인 회색 밴드)
 - 데드맨 스위치: healthchecks.io 핑 (무료) — 3주기 미수신 시 알림. Workers는 상주 프로세스가 아니라 "cron 미발화"도 갭으로 잡히므로 manifest 기반 감시가 1차
@@ -420,7 +445,7 @@ Tailwind CSS + CSS 토큰
 
 **지구본 코드 한 줄 쓰기 전에 배포한다. 이 시점부터 히스토리 시계가 돈다.**
 
-- 항공기 지역당 3분 스냅샷(6지역 스윕, §8.7 스케줄 계약) + 지진 60s 수집 — **Cloudflare Workers Cron**
+- 항공기 지역당 10분 스냅샷(6지역 스윕, §8.7 스케줄 계약) + 지진 20분 수집(프론트는 USGS 60s 직접 폴링) — **Cloudflare Workers Cron**
 - 저장 = **R2 단독** (§8.6): raw 7일 롤링 + norm 15분 슬라이스 + latest 스냅샷 + manifest. DB 없음
 - 산출물: wrangler 프로젝트 (cron worker + R2 바인딩) + healthchecks 핑. ~200줄
 - **선행 검증 (착수 게이트)** — Workers 무료 CPU 한도(10ms/호출)를 최악 경로 3종으로 실측 (fetch 대기는 CPU 미과금이나 실측 전 단정 금지): ① 항공기 invocation = **분당 2지역**(실제 스케줄 §8.7) 파싱+정규화+H3+집계+gzip+manifest **+ latest.json read-modify-write 전체**(기존 ~500KB 객체 read/decompress/parse/merge/re-gzip/CAS 포함) ② GDELT 15분 슬롯 수 MB 파싱 ③ **daily capacity scan** = 90일 norm+agg 전수 prefix LIST(pagination 포함)+size 합산 — 초과 시 prefix별 분할 스캔 or 계정 metrics API 폴백을 계약. agg 포인터 shard는 연말 최대 엔트리 수 fixture로 CAS 재읽기·재직렬화 비용까지 확인.
@@ -442,7 +467,7 @@ Globe Experience 타임박스: 다크 스타일 + 대기광 + 60fps 관성 회�
 완료 조건 (✅ 2026-08-19 전부 충족):
 - [x] 엔진 확정 (docs/spike/RESULT.md)
 - [x] 실 API 지진 전건 + 항공기 1,442대 동시 렌더 @ 120fps (※ '5,000대+' 원 기준은 전 지구 수집 전제 — 6지역 계약으로 조정됨. 렌더 능력 자체는 스파이크에서 30k점 120fps 검증)
-- [x] 항공기 지역당 3분 주기 갱신
+- [x] 항공기 지역당 10분 주기 갱신 (CPU 사다리 rung③ — §8.7)
 - [x] 마커 클릭 → 속성 패널
 - [x] 공개 URL: https://live-world-pulse.pages.dev
 
@@ -587,7 +612,8 @@ dev 오버레이 (FPS·객체 수·attribute 생성 시간·워커 큐)를 30분
 
 | 리스크 | 확률 | 대응 |
 |---|---|---|
-| ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정 (기준 1·2·3·6 통과 + 기준 5 스냅샷 기준 통과, 기준 4는 5/6 O + 미확정 1 — 규칙 1 준용). 미확정·미시험 3건은 Phase 0 이관 (RESULT §이관 7~9). docs/spike/RESULT.md |
+| **TC 트랙·폴리곤 렌더 미구현** (globe 위 Path가 지구 외곽으로 뜸 — 스파이크 이관 7 미확정 항목이 실제로 발현) | 중 | 현재 경보는 전부 Point 마커. GreatCircleLayer·좌표 subdivision 시도 or 2D 인셋으로 대안 검토 (Phase 1 잔여) |
+| ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정 (기준 1·2·3·6 통과 + 기준 5 스냅샷 기준 통과, 기준 4는 5/6 O + 미확정 1 — 규칙 1 준용). 미확정·미시험 3건은 Phase 0 이관 (RESULT §이관 7~9 — **7(globe 위 Path 지표 관통)은 2026-08-19 해소: PathLayer `billboard: true`**, 8·9는 이월). docs/spike/RESULT.md |
 | ~~adsb.lol 커버리지/덤프 부실~~ | 해소 | ✅ 실측 완료 — 채택 유효. 단 동아시아 커버 유럽의 1/8 (UI 정직 표기로 대응) |
 | ~~GDACS 스펙이 기대와 다름~~ | 해소 | ✅ 실측 완료 — 채택 유효, 태풍 데모 성립 |
 | Collector 장애로 히스토리 구멍 | 상 | manifest 갭 원장 + healthchecks + UI 정직 표시 (구멍 자체를 기능으로) |

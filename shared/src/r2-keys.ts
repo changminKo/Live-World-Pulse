@@ -67,3 +67,49 @@ export function capacityKey(dt: string): string {
 export const LATEST_KEY = 'latest.json';
 /** §8.6 fail-safe ②: 이 키가 존재하면 수집 전면 정지 (수동 삭제로만 해제) */
 export const HALT_KEY = 'manifest/halt.json';
+
+/* ── weather 파이프라인 스테이징 (2026-08-19 CPU 사다리 — 페이지 청크 분할) ──
+ *  GDACS 커밋을 한 invocation에서 하면 페이지 6~8개(810KB+)를 한 번에
+ *  gunzip+parse해 Free 하드 10ms를 3배 초과했다 (프로덕션 26ms 실측).
+ *  그래서 페이지 슬롯이 **가져온 즉시 정규화**해 청크로 남기고, 커밋 슬롯은
+ *  정규화된 청크(합계 ~200KB)만 읽는다. 스테이징은 커밋이 지우고,
+ *  남은 잔재는 daily capacity scan이 2시간 경과분을 청소한다. */
+
+/** weather 수집 사이클 = 60분 (시간당 1회). 사이클 시작 epoch ms가 스테이징 키의 세대.
+ *  30분 → 60분 완화 사유 (2026-08-19 프로덕션 실측): GDACS 리스트 페이지 1장(135KB)의
+ *  [fetch → raw gzip PUT → parse → 정규화 → 청크 PUT]이 Workers에서 ~6.5ms다
+ *  (슬롯당 2장 = 13ms 실측). 그래서 슬롯당 1장으로 내렸고, 실측 수요 8장(Green 6 +
+ *  Orange 1 + Red 1)을 담으려면 사이클당 페이지 슬롯 8개가 필요하다 → 시간당 1사이클.
+ *  경보는 시간 단위로 움직이므로(GDACS `datemodified` 실측) 60분 갱신은 수용 가능하고,
+ *  프론트 stale 임계(weather 60분 × 2 = 120분)와도 정합한다. */
+export const WEATHER_CYCLE_SEC = 3600;
+
+/** 사이클 시작 epoch ms — 스테이징 키/진행 마커의 세대 식별자 */
+export function weatherCycleStartMs(epochMs: number): number {
+  return slotStartSec(epochMs, WEATHER_CYCLE_SEC) * 1000;
+}
+
+export const WEATHER_STAGING_PREFIX = 'staging/weather/';
+
+/** staging/weather/cycle={cycleStartMs}/ — 사이클 단위 스테이징 prefix */
+export function weatherCyclePrefix(cycleStartMs: number): string {
+  return `${WEATHER_STAGING_PREFIX}cycle=${cycleStartMs}/`;
+}
+
+/** 정규화된 페이지 청크 — 본문은 WeatherAlertRecord[] JSON 배열 (커밋이 parse) */
+export function weatherChunkKey(cycleStartMs: number, level: string, page: number): string {
+  return `${weatherCyclePrefix(cycleStartMs)}${level.toLowerCase()}-p${page}.json`;
+}
+
+/** 사이클 진행 마커 — 레벨별 페이지 수·종료 상태. 커밋의 완주 게이트(Med1) */
+export function weatherProgressKey(cycleStartMs: number): string {
+  return `${weatherCyclePrefix(cycleStartMs)}progress.json`;
+}
+
+/** 활성 TC 인덱스 (커밋이 발행, 트랙 슬롯이 읽음) — 작은 목록 하나 */
+export const TC_INDEX_KEY = 'weather/tc-index.json';
+
+/** TC 트랙·콘 캐시 — getgeometry 1회 결과. 커밋이 읽어 경보 지오메트리에 합성 */
+export function tcTrackKey(eventId: number, episodeId: number): string {
+  return `weather/tracks/${eventId}-${episodeId}.json`;
+}

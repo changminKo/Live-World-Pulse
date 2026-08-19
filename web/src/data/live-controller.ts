@@ -32,8 +32,8 @@ function pollIntervalOf(res: Response): { pollIntervalMs: number } | Record<stri
 
 /** 지역별 참조 안정 병합기 — 컨트롤러 수명 스코프 (리뷰 Med4) */
 const ingestFlights = createFlightSource();
-const ingestWeather = createWeatherSource();
-const ingestNews = createNewsSource();
+const weatherSource = createWeatherSource();
+const newsSource = createNewsSource();
 
 /** latest.json 1req가 3레이어(flight·weather·news)를 실어나른다 — 상태 전이도 3레이어 공통 */
 const LATEST_LAYERS = ['flight', 'weather', 'news'] as const;
@@ -79,16 +79,17 @@ async function pollLatest(etag: string | null): Promise<PollOutcome> {
 
   // 레이어별 독립 ingest — 부분 실패가 정상 상태 (PLAN §3, 전체 스피너 금지)
   const now = Date.now();
+  // 스키마 불일치는 sticky — 다음 304가 ready로 세탁하지 못한다 (재리뷰 Med6)
   const flights = ingestFlights(body, now);
-  if (flights === null) store.setError('flight', 'latest.json 스키마 불일치');
+  if (flights === null) store.setSchemaError('flight', 'latest.json 스키마 불일치');
   else store.setFlights(flights);
 
-  const weather = ingestWeather(body, now);
-  if (weather === null) store.setError('weather', 'latest.json 스키마 불일치');
+  const weather = weatherSource.ingest(body, now);
+  if (weather === null) store.setSchemaError('weather', 'latest.json 스키마 불일치');
   else store.setWeather(weather);
 
-  const news = ingestNews(body, now);
-  if (news === null) store.setError('news', 'latest.json 스키마 불일치');
+  const news = newsSource.ingest(body, now);
+  if (news === null) store.setSchemaError('news', 'latest.json 스키마 불일치');
   else store.setNews(news);
 
   if (flights === null && weather === null && news === null) {
@@ -133,13 +134,27 @@ async function pollUsgs(etag: string | null): Promise<PollOutcome> {
   }
   const outcome = normalizeUsgs(body, Date.now());
   if (!outcome.ok) {
-    store.setError('earthquake', 'USGS 스키마 불일치');
+    store.setSchemaError('earthquake', 'USGS 스키마 불일치');
     return { kind: 'error', reason: 'schema' };
   }
   // 시각 T=now 슬라이스 — kind별 규칙 (occurrence=window 1h, 단일 timestamp 필터 금지)
   const records = sliceOccurrence(outcome.records, Date.now(), quakeWindowMs);
   store.setQuakes(records);
   return { kind: 'ok', etag: res.headers.get('ETag'), ...pollIntervalOf(res) };
+}
+
+/** 30초 틱 — stale 배지 재평가 **+ 시간 경과 재슬라이스** (재리뷰 Med5).
+ *  weather(interval)·news(window)는 asOf가 그대로여도 시계가 흐르면 표시 집합이 바뀐다.
+ *  폴이 아니므로 lastSuccessAtMs·asOf는 건드리지 않고 records만 교체하며,
+ *  집합이 같으면 배열 참조가 유지돼 deck 레이어는 재생성되지 않는다.
+ *  지진은 폴마다 window를 다시 계산하고(60초), 항공기는 sampled+stale 표시라 대상 아님. */
+function onTick(nowMs: number): void {
+  const store = useLiveStore.getState();
+  const weather = weatherSource.reslice(nowMs);
+  if (weather !== null) store.resliceWeather(weather);
+  const news = newsSource.reslice(nowMs);
+  if (news !== null) store.resliceNews(news);
+  store.recomputeStale(nowMs);
 }
 
 /** 폴 루프 2개 + stale 틱 시작. 반환 함수로 전부 정지. */
@@ -150,7 +165,7 @@ export function startLiveController(): () => void {
   }
   const stopLatest = startPollLoop({ intervalMs: POLL_INTERVAL_MS, poll: pollLatest });
   const stopUsgs = startPollLoop({ intervalMs: POLL_INTERVAL_MS, poll: pollUsgs });
-  const tick = setInterval(() => useLiveStore.getState().recomputeStale(Date.now()), STALE_TICK_MS);
+  const tick = setInterval(() => onTick(Date.now()), STALE_TICK_MS);
   return () => {
     stopLatest();
     stopUsgs();

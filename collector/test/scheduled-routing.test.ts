@@ -81,13 +81,20 @@ describe('index.scheduled — 분 테이블 라우팅', () => {
     expect(calls.some((u) => u.includes('api.adsb.lol'))).toBe(false);
   });
 
-  test('weather-fetch 분(m=6): GDACS 3레벨 fetch, 그 외 없음', async () => {
+  test('weather-page 분(m=6): GDACS 페이지 1개만 fetch (슬롯 예산), 그 외 없음', async () => {
     const calls = stubAllSources();
-    await runScheduled(new FakeR2(), Date.UTC(2026, 7, 19, 12, 6, 0));
+    const fake = new FakeR2();
+    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 6, 0));
 
-    expect(calls.filter((u) => u.includes('geteventlist/SEARCH')).length).toBe(3);
+    // 사후 리뷰 High1: 한 슬롯이 3레벨을 다 도는 게 아니라 PAGES_PER_SLOT(1)만 처리한다
+    // (프로덕션 실측: 2페이지 = cpuTime 13ms → 1페이지로 확정)
+    expect(calls.filter((u) => u.includes('geteventlist/SEARCH')).length).toBe(1);
     expect(calls.some((u) => u.includes('gdelt'))).toBe(false);
     expect(calls.some((u) => u.includes('api.adsb.lol'))).toBe(false);
+    // 페이지 슬롯은 norm·latest를 건드리지 않는다 (커밋 몫)
+    expect(fake.keysWithPrefix('norm/weather/')).toHaveLength(0);
+    expect(fake.store.has(latestLayerKey('weather'))).toBe(false);
+    expect(fake.keysWithPrefix('staging/weather/').length).toBeGreaterThan(0);
   });
 
   test('news-fetch 분(m=2): GDELT lastupdate+zip raw만 — norm 없음', async () => {
@@ -102,14 +109,24 @@ describe('index.scheduled — 분 테이블 라우팅', () => {
     expect(fake.keysWithPrefix('norm/news/')).toHaveLength(0);
   });
 
-  test('커밋·처리 분(m=9 / m=4): GDACS 재fetch 복구 / GDELT raw 되읽기', async () => {
+  test('커밋 분(m=55): 진행 마커 없으면 GDACS를 다시 부르지 않는다 (Med1 — 인라인 복구 폐기)', async () => {
     const calls = stubAllSources();
     const fake = new FakeR2();
-    // m=9 — raw가 없으므로 인라인 재fetch 복구 경로
-    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 9, 0));
-    expect(calls.filter((u) => u.includes('geteventlist/SEARCH')).length).toBe(3);
 
-    // m=4 — lastupdate로 파일 키 재확인 (zip은 없으면 재fetch)
+    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 55, 0));
+
+    // 이전 판은 raw가 없으면 커밋 슬롯이 3레벨을 인라인 재fetch했다 (fetch+커밋 CPU 겹침).
+    // 지금은 마커 없음 = 미완주 → 아무것도 하지 않고 다음 사이클로 넘긴다.
+    expect(calls.filter((u) => u.includes('geteventlist/SEARCH')).length).toBe(0);
+    expect(fake.store.has(latestLayerKey('weather'))).toBe(false);
+    const status = fake.keysWithPrefix('manifest/status/weather/');
+    expect(status).toHaveLength(1);
+    expect(fake.jsonOf<{ outcome: string }>(status[0]!)!.outcome).toBe('partial');
+  });
+
+  test('처리 분(m=4): GDELT lastupdate로 파일 키 재확인 후 raw 되읽기', async () => {
+    const calls = stubAllSources();
+    const fake = new FakeR2();
     const before = calls.length;
     await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 4, 0));
     expect(calls.slice(before).some((u) => u === GDELT_LASTUPDATE_URL)).toBe(true);

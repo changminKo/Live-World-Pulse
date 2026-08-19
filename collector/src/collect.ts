@@ -1,13 +1,25 @@
 /** 수집 오케스트레이션 — 한 invocation = 작업 1개 (분 배정은 schedule.ts MINUTE_TASKS).
  *
- *  CPU 사다리 발동 상태 (2026-08-19 — Free 플랜 하드 10ms/invocation, tail 100% exceededCpu):
- *  - rung ① invocation 분할 극대화: 지진 / 항공기 1지역 / weather fetch / weather commit /
- *    news fetch / news process 를 각각 다른 분에 (schedule.ts). latest 재조립만 매 분
- *    공통 — byte concat으로 ~0.3ms (r2/latest.ts)
- *  - rung ② 강등: flight norm = raw-only, weather TC 트랙 enrich 중단 (아래 각 플래그)
- *  - rung ③ 완화: adsb 반경 250→150nm, GDACS 레벨당 페이지 캡 10→2,
- *    지역당 주기 3분→10분, 지진 1분→10분, weather 15분→30분
+ *  CPU 사다리 상태 (2026-08-19 — Free 플랜 하드 10ms/invocation):
+ *  - rung ① invocation 분할: 지진 / 항공기 1지역 / weather 페이지 2개 / weather 커밋 /
+ *    weather 트랙 / news fetch / news process 를 각각 다른 분에 (schedule.ts).
+ *    latest 재조립만 매 분 공통 — byte concat으로 ~0.3ms (r2/latest.ts)
+ *  - rung ①-b 2차 분할 (사후 리뷰 High1): 1작업/분으로도 tail이 weather-commit 26ms ·
+ *    quake 13ms였다. weather는 **페이지 단위**로 더 쪼갰고(가져온 즉시 정규화 →
+ *    커밋은 정규화된 청크만 읽음), quake는 norm 커밋 대상을 현재+직전 슬롯으로 좁혔다.
+ *  - rung ② 강등: flight norm = raw-only (FLIGHT_NORM_DEGRADED).
+ *    weather TC 트랙 강등은 **해제**됐다 — 전용 트랙 슬롯 + 캐시로 되살렸다
+ *    (collectWeatherTracks / applyTcGeometry).
+ *  - rung ③ 완화: adsb 반경 250→150nm, 지역당 주기 3분→10분, 지진 1분→20분,
+ *    weather 15분→30분. GDACS 페이지 캡은 4→8로 **되돌렸다** (재리뷰 Med2 —
+ *    캡이 실데이터를 잘랐고, CPU는 캡이 아니라 분할로 잡는다)
  *  - gzip은 zlib level 1 (gzip.ts 헤더 참조)
+ *
+ *  지오메트리 범위 (정직 표기 — 재리뷰 High2):
+ *  GDACS getgeometry는 **TC(태풍)에만** 트랙·예보콘을 준다. 그래서 구현 범위도 TC 한정이다
+ *  — TC는 트랙 LineString + 콘 Polygon(파생 레코드), 그 외 경보(홍수·산불 등)는 Point다.
+ *  비TC 경보의 영역 폴리곤은 이벤트당 getgeometry 1콜(수백 콜)이라 $0·10ms 예산에서
+ *  수집하지 않는다 — 백로그 (PLAN §4.2). "폴리곤 구현" 주장을 TC 콘으로 한정한다.
  *
  *  지역·단계 격리: 한 지역의 parse/R2/스키마 실패가 다음 지역과
  *  이미 모은 records의 norm 커밋을 중단시키지 않는다.
@@ -21,12 +33,15 @@ import {
   GDACS_ALERT_LEVELS,
   GDACS_PAGE_CAP,
   GDACS_PAGE_SIZE,
+  applyTcGeometry,
+  buildTcGeometry,
   dedupeGdacs,
+  gdacsGeometryUrl,
   gdacsListUrl,
   normalizeGdacsList,
-  scanGdacsPage,
+  tcIdsOf,
 } from './sources/gdacs';
-import type { GdacsAlertLevel } from './sources/gdacs';
+import type { GdacsAlertLevel, TcIndex, TcTrackCache } from './sources/gdacs';
 import {
   GDELT_LASTUPDATE_URL,
   buildNewsRecords,
@@ -37,7 +52,19 @@ import {
 } from './sources/gdelt';
 import { mergeById, mergeByRevision, putIfAbsent, upsertNormSlot } from './r2/norm';
 import { latestFlightRegionKey, latestLayerKey, putSnapshotIfNewer } from './r2/latest';
-import { NORM_SLOT_SEC, OBSERVATION_BUCKET_SEC, rawKey, slotStartSec, statusKey } from './slots';
+import {
+  NORM_SLOT_SEC,
+  OBSERVATION_BUCKET_SEC,
+  TC_INDEX_KEY,
+  WEATHER_CYCLE_SEC,
+  rawKey,
+  slotStartSec,
+  statusKey,
+  tcTrackKey,
+  weatherChunkKey,
+  weatherCycleStartMs,
+  weatherProgressKey,
+} from './slots';
 import type { EarthquakeRecord, Env, FlightRecord, LayerId, WeatherAlertRecord } from './types';
 
 const USGS_TIMEOUT_MS = 15_000;
@@ -81,8 +108,21 @@ export async function collectQuakes(env: Env, scheduledMs: number): Promise<Coll
       bySlot.set(slot, [...(bySlot.get(slot) ?? []), r]);
     }
 
+    // 커밋 대상은 **현재 + 직전 슬롯만** (사후 리뷰 High1 — CPU).
+    // all_hour는 1시간 창이라 예전에는 매 실행이 15분 슬롯 4~5개를 전부 upsert했다
+    // (슬롯당 R2 왕복 6회 × 5 = 30회 → 프로덕션 13ms). 스케줄이 20분 주기이고 슬롯이
+    // 15분이므로 [현재, 직전] 두 슬롯이면 모든 슬롯이 최소 한 번은 "현재"로,
+    // 대부분 다시 "직전"으로 커밋돼 커버리지 손실이 없다.
+    // 한계 (정직 표기): 30분보다 오래된 레코드의 사후 정정(revision 증가)은 반영되지
+    // 않는다 — USGS 정정 대부분은 수분 내이고, 그 밖은 Phase 2 백필 대상이다.
+    const commitSlots = new Set([normSlot, normSlot - NORM_SLOT_SEC]);
     let slotsWritten = 0;
+    let slotsSkipped = 0;
     for (const [slot, slotRecords] of bySlot) {
+      if (!commitSlots.has(slot)) {
+        slotsSkipped += 1;
+        continue;
+      }
       const outcome = await upsertNormSlot(
         env.DATA,
         'earthquake',
@@ -104,7 +144,7 @@ export async function collectQuakes(env: Env, scheduledMs: number): Promise<Coll
     return {
       ok: true,
       layer: 'earthquake',
-      detail: { records: records.length, dropped, slots: bySlot.size, slotsWritten },
+      detail: { records: records.length, dropped, slots: bySlot.size, slotsWritten, slotsSkipped },
     };
   } catch (error: unknown) {
     const detail = { reason: 'exception', error: String(error) };
@@ -218,302 +258,400 @@ export async function collectFlightRegion(
 
 const GDACS_TIMEOUT_MS = 15_000;
 const GDACS_RETRY_DELAY_MS = 2_000;
-/** CPU 사다리 rung ② 강등 (2026-08-19): TC 트랙 getgeometry 응답이 225~510KB —
- *  parse + ring centroid 계산만 태풍 1건당 ~3ms(실측 추정)라 커밋 슬롯 예산을 단독으로
- *  먹었다. 경보 자체(Point·등급·기간)는 그대로 살아 있고 트랙 LineString만 없다.
- *  status 원장에 degraded(reason: tc_track_disabled)로 기록 — 숨기지 않는다.
- *  재개 조건: Workers Paid(사용자 명시 승인) 또는 트랙 전용 슬롯 신설. */
-const WEATHER_TC_TRACK_DEGRADED = true;
-const GDELT_TIMEOUT_MS = 15_000;
-const GDELT_ZIP_TIMEOUT_MS = 30_000;
-const GDELT_RETRY_DELAY_MS = 2_000;
-/** news 파싱 팻파일 가드 — 해제 CSV가 이 크기를 넘으면 raw-only 강등 (unzip+스캔 CPU 폭주 방어.
- *  실측: 공식 masterfilelist 395,845개 중 최대 해제 22.6MB — 스캔만 ~20ms로 하드 한도 초과.
- *  2026-08-19 재조정 8MB → 2MB: 평시 export CSV는 447KB이고(실측) 전체 경로가 ~3ms다.
- *  2MB면 평시의 4배까지 허용하면서 하드 10ms 안에 남는다. */
-const MAX_NEWS_CSV_BYTES = 2 * 1024 * 1024;
+/** 페이지 슬롯당 처리 페이지 수 (사후 리뷰 High1 — 분할 단위가 곧 CPU 단위).
+ *  **1로 확정 (2026-08-19 프로덕션 실측)**: 슬롯당 2페이지를 넣었더니 Green 2장에서
+ *  cpuTime 13ms였다 (작은 Red+Orange 조합은 9ms). 페이지 1장의 [fetch → raw gzip PUT →
+ *  JSON.parse → 정규화 → 청크 PUT]이 Workers에서 ~6.5ms이므로 1장이 하드 10ms의
+ *  안전선이다 (로컬 bench/slot-cpu.ts 기준 ~1.3ms — 로컬:프로덕션 ≈ 1:5).
+ *  대가는 사이클 길이: 8페이지 + 여유 2장을 담으려면 페이지 슬롯 10개가 필요해
+ *  weather 사이클이 30분 → 60분이 됐다 (shared WEATHER_CYCLE_SEC 주석). */
+const PAGES_PER_SLOT = 1;
+/** 사이클 전체 페이지 예산 = PAGES_PER_SLOT × weather-page 슬롯 수(8, schedule.ts).
+ *  예산을 다 쓰고도 pending인 레벨은 capped(cycle_budget)로 못박는다 — 그래야 커밋이
+ *  "미완주"로 오해해 latest를 영구히 얼리지 않고, 잘림은 partial로 정직하게 남는다. */
+const PAGES_PER_CYCLE = PAGES_PER_SLOT * 10;
+/** 페이지 fetch 순서 — **작은 레벨 먼저** (Red 1p, Orange 1p, Green 6p 실측 2026-08-19).
+ *  예산이 모자랄 때 잘리는 쪽이 항상 Green(가장 경미한 등급)이 되도록 하는 우선순위다.
+ *  GDACS_ALERT_LEVELS(등급 오름차순)는 dedupe·표시 순서용이라 그대로 둔다. */
+const PAGE_ORDER: readonly GdacsAlertLevel[] = ['Red', 'Orange', 'Green'];
+/** 트랙 캐시 유효 창 — 이보다 낡으면 합성하지 않고 Point로 폴백하고 원장에 기록한다.
+ *  트랙 슬롯이 시간당 2회 × TC_PER_SLOT건 회전이므로 활성 TC 5건이면 최장 ~2.5시간. */
+const TC_CACHE_TTL_MS = 6 * 3600_000;
+/** 트랙 슬롯 1회당 getgeometry 콜 수 — 응답이 ~300KB(실측 307KB)라 parse만 프로덕션
+ *  ~4ms로 추정된다. 1건 고정 + 회전으로 슬롯 CPU를 예측 가능하게 유지한다. */
+const TC_PER_SLOT = 1;
 
-interface GdacsRawFetch {
-  perLevel: Record<string, unknown>;
-  okLevels: number;
-  cappedLevels: string[];
+type GdacsLevelState = 'pending' | 'complete' | 'capped' | 'failed';
+
+interface GdacsLevelProgress {
+  /** 이 사이클에서 성공적으로 가져와 청크까지 남긴 페이지 수 (1..pages 연속) */
   pages: number;
+  /** 누적 current 건수 — 종료 판정·관측용 */
+  current: number;
+  state: GdacsLevelState;
+  reason?: string;
 }
 
-/** GDACS fetch 단계 — 페이징 fetch + raw 적재 + 체인 완주 마커. **정규화하지 않는다.**
- *  이전 판은 여기서 normalizeGdacsList를 돌리고 커밋 슬롯이 raw를 되읽어 또 돌렸다
- *  (동일 작업 2회). 정규화는 커밋 슬롯에서 한 번만 — 페이징 종료 판정은 parse 없는
- *  scanGdacsPage로 대체한다 (CPU 사다리 rung ①).
- *  종료 조건 두 가지: ① 페이지의 feature가 100 미만(마지막 페이지)
- *  ② current가 0 (GDACS는 current를 앞쪽 페이지에 정렬 — 뒤는 히스토리라 커밋이 버린다).
- *  페이지 실패 시 그 레벨은 ok:false (이미 적재한 페이지는 유지 — 커밋의 union엔 무해). */
-async function fetchGdacsRawPages(env: Env, scheduledMs: number): Promise<GdacsRawFetch> {
-  const perLevel: Record<string, unknown> = {};
-  let okLevels = 0;
-  let totalPages = 0;
-  const cappedLevels: string[] = [];
+/** 사이클 진행 마커 (staging/weather/cycle={cycleStart}/progress.json).
+ *  커밋 슬롯의 완주 게이트 — "fetch 3분 뒤면 끝났겠지" 같은 시간 간격 의존을 대체한다
+ *  (재리뷰 Med1). 마커가 없거나 pending/failed 레벨이 남아 있으면 커밋은 아무것도
+ *  건드리지 않고 다음 사이클로 넘긴다. */
+interface WeatherCycleProgress {
+  cycleStart: number;
+  updatedAt: string;
+  levels: Record<string, GdacsLevelProgress>;
+}
 
+function freshProgress(cycleStart: number, nowMs: number): WeatherCycleProgress {
+  const levels: Record<string, GdacsLevelProgress> = {};
   for (const level of GDACS_ALERT_LEVELS) {
-    let pages = 0;
-    let current = 0;
-    let levelOk = true;
-    let capped = false;
-    const completeKey = rawKey('gdacs', scheduledMs, `list_${level.toLowerCase()}_complete`);
-    try {
-      // Med2 — 재시도(같은 scheduledMs cron 재전달) 시작 시 기존 마커 선무효화:
-      // 이전 시도의 complete 마커가 남은 채 이번 체인이 중간 실패하면, 페이지가
-      // 신구 세대로 섞였는데 커밋이 complete로 오인해 latest를 덮는다.
-      await env.DATA.delete(completeKey);
-      for (let page = 1; page <= GDACS_PAGE_CAP; page += 1) {
-        const res = await fetchTextWithRetry(gdacsListUrl(level, page), GDACS_TIMEOUT_MS, GDACS_RETRY_DELAY_MS);
-        if (!res.ok) {
-          levelOk = false;
-          perLevel[level] = { ok: false, reason: res.reason, status: res.status, pages };
-          break;
-        }
-        await env.DATA.put(
-          rawKey('gdacs', scheduledMs, `list_${level.toLowerCase()}_p${page}`),
-          await gzipText(res.text),
-        );
-        const scan = scanGdacsPage(res.text);
-        pages += 1;
-        current += scan.current;
-        if (scan.features < GDACS_PAGE_SIZE) break; // 마지막 페이지
-        if (scan.current === 0) break; // 이후 페이지는 전부 히스토리
-        if (page === GDACS_PAGE_CAP) {
-          capped = true; // 캡 도달인데 아직 current가 남았다 — 잘림 (숨기지 않는다)
-          cappedLevels.push(level);
-        }
-      }
-      // 재리뷰 High2: 체인 완주 마커 — 커밋 단계는 이 마커가 있는 레벨만 complete로
-      // 인정한다. 중간 페이지 실패 슬롯은 raw 일부가 남아도 마커가 없어 latest 갱신에서
-      // 제외 (이전 스냅샷 유지). 마커 PUT 실패는 catch로 떨어져 incomplete 취급.
-      // Med2: body에 세대(scheduledMs)·페이지 수를 넣어 커밋이 실제 raw와 대조한다.
-      if (levelOk) {
-        await env.DATA.put(completeKey, await gzipText(JSON.stringify({ scheduledMs, pages })));
-      }
-    } catch (error: unknown) {
-      levelOk = false;
-      perLevel[level] = { ok: false, reason: 'exception', error: String(error), pages };
-    }
-    totalPages += pages;
-    if (levelOk) {
-      okLevels += 1;
-      perLevel[level] = { ok: true, pages, current, ...(capped ? { capped } : {}) };
-    }
+    levels[level] = { pages: 0, current: 0, state: 'pending' };
+  }
+  return { cycleStart, updatedAt: new Date(nowMs).toISOString(), levels };
+}
+
+/** 진행 마커 읽기 — 없거나 손상이면 null (커밋은 null을 "미완주"로 취급) */
+async function readWeatherProgress(
+  env: Env,
+  cycleStart: number,
+): Promise<WeatherCycleProgress | null> {
+  const obj = await env.DATA.get(weatherProgressKey(cycleStart));
+  if (!obj) return null;
+  try {
+    const parsed = (await obj.json()) as WeatherCycleProgress;
+    if (parsed?.cycleStart !== cycleStart || typeof parsed.levels !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+interface GdacsPageOutcome {
+  records: WeatherAlertRecord[];
+  features: number;
+  current: number;
+}
+
+/** 페이지 1개: fetch → raw 적재 → **즉시 정규화** → 청크 PUT.
+ *  정규화를 여기서 하는 것이 이번 재설계의 핵심이다 — 커밋 슬롯이 원문 810KB를
+ *  되읽어 한 번에 파싱하던 구조(프로덕션 26ms)를 페이지 단위로 나눈다.
+ *  파싱 총량은 그대로 1회다 (fetch에서 세고 커밋에서 다시 파싱하던 중복도 제거). */
+async function fetchGdacsPage(
+  env: Env,
+  scheduledMs: number,
+  cycleStart: number,
+  level: GdacsAlertLevel,
+  page: number,
+): Promise<{ ok: true; outcome: GdacsPageOutcome } | { ok: false; reason: string; status?: number }> {
+  const res = await fetchTextWithRetry(gdacsListUrl(level, page), GDACS_TIMEOUT_MS, GDACS_RETRY_DELAY_MS);
+  if (!res.ok) return { ok: false, reason: res.reason, status: res.status };
+
+  await env.DATA.put(
+    rawKey('gdacs', scheduledMs, `list_${level.toLowerCase()}_p${page}`),
+    await gzipText(res.text),
+  );
+
+  const parsed = JSON.parse(res.text) as { features?: unknown };
+  const features = Array.isArray(parsed.features) ? parsed.features : null;
+  if (features === null) return { ok: false, reason: 'schema' };
+
+  const normalized = normalizeGdacsList(parsed, scheduledMs);
+  if (!normalized.ok) return { ok: false, reason: 'schema' };
+
+  // current 카운트는 이미 파싱한 객체에서 센다 (텍스트 스캔 불필요 — 종료 판정 근거).
+  let current = 0;
+  for (const f of features as Array<{ properties?: { iscurrent?: unknown } }>) {
+    const v = f?.properties?.iscurrent;
+    if (v === 'true' || v === true) current += 1;
   }
 
-  return { perLevel, okLevels, cappedLevels, pages: totalPages };
+  await env.DATA.put(weatherChunkKey(cycleStart, level, page), JSON.stringify(normalized.records));
+  return { ok: true, outcome: { records: normalized.records, features: features.length, current } };
 }
 
-/** GDACS fetch 슬롯 (schedule.ts weather-fetch) — raw 적재 전용.
- *  norm 커밋·latest 교체는 3분 뒤 weather-commit 슬롯이 raw를 되읽어 수행 (CPU 분할). */
-export async function collectWeather(env: Env, scheduledMs: number): Promise<CollectSummary> {
+/** 페이지 종료 판정 — GDACS는 current를 앞쪽 페이지에 정렬해 돌려준다 (실측).
+ *  ① feature < 100 → 마지막 페이지 ② current 0 → 이후는 전부 히스토리(커밋이 버린다)
+ *  ③ 캡 도달 → capped (잘림을 숨기지 않는다: 원장 page_capped + 커밋 결과 ok:false) */
+function nextLevelState(page: number, outcome: GdacsPageOutcome): GdacsLevelState {
+  if (outcome.features < GDACS_PAGE_SIZE) return 'complete';
+  if (outcome.current === 0) return 'complete';
+  if (page >= GDACS_PAGE_CAP) return 'capped';
+  return 'pending';
+}
+
+/** weather 페이지 슬롯 (schedule.ts weather-page — 사이클당 4개).
+ *  진행 마커를 보고 아직 pending인 레벨의 다음 페이지를 PAGES_PER_SLOT개만 처리한다.
+ *  전 레벨이 종료 상태면 아무 일도 하지 않는다 (사이클 여유 슬롯). */
+export async function collectWeatherPages(env: Env, scheduledMs: number): Promise<CollectSummary> {
+  const cycleStart = weatherCycleStartMs(scheduledMs);
   const normSlot = slotStartSec(scheduledMs, NORM_SLOT_SEC);
 
   try {
-    const { perLevel, okLevels, cappedLevels, pages } = await fetchGdacsRawPages(env, scheduledMs);
+    const existing = await readWeatherProgress(env, cycleStart);
+    const base = existing ?? freshProgress(cycleStart, scheduledMs);
+    const levels: Record<string, GdacsLevelProgress> = { ...base.levels };
+    const processed: Array<Record<string, unknown>> = [];
+    let failures = 0;
 
-    if (okLevels === 0) {
-      const detail = { phase: 'fetch', reason: 'all_levels_failed', levels: perLevel };
-      await writeStatus(env, 'weather', normSlot, scheduledMs, 'failed', detail);
-      return { ok: false, layer: 'weather', detail };
+    for (let n = 0; n < PAGES_PER_SLOT; n += 1) {
+      const level = PAGE_ORDER.find((l) => levels[l]?.state === 'pending');
+      if (level === undefined) break;
+      const lp = levels[level] ?? { pages: 0, current: 0, state: 'pending' as GdacsLevelState };
+      const page = lp.pages + 1;
+      const result = await fetchGdacsPage(env, scheduledMs, cycleStart, level, page);
+      if (!result.ok) {
+        // 레벨 실패 = 그 레벨 체인 미완주. 커밋이 latest를 건드리지 않도록 failed로 못박는다
+        // (이전 스냅샷 보존 — 부분 데이터로 덮어 활성 경보가 사라지던 회귀 방지).
+        levels[level] = { ...lp, state: 'failed', reason: result.reason };
+        processed.push({ level, page, ok: false, reason: result.reason, status: result.status });
+        failures += 1;
+        continue;
+      }
+      levels[level] = {
+        pages: page,
+        current: lp.current + result.outcome.current,
+        state: nextLevelState(page, result.outcome),
+      };
+      processed.push({
+        level,
+        page,
+        ok: true,
+        records: result.outcome.records.length,
+        current: result.outcome.current,
+      });
     }
 
-    const partial = okLevels < GDACS_ALERT_LEVELS.length;
-    if (partial || cappedLevels.length > 0) {
+    // 사이클 예산 소진 — 남은 pending은 잘림으로 확정 (커밋이 영구 대기하지 않게)
+    const totalPages = GDACS_ALERT_LEVELS.reduce((sum, l) => sum + (levels[l]?.pages ?? 0), 0);
+    if (totalPages >= PAGES_PER_CYCLE) {
+      for (const level of GDACS_ALERT_LEVELS) {
+        const lp = levels[level];
+        if (lp?.state === 'pending') levels[level] = { ...lp, state: 'capped', reason: 'cycle_budget' };
+      }
+    }
+
+    const progress: WeatherCycleProgress = {
+      cycleStart,
+      updatedAt: new Date(scheduledMs).toISOString(),
+      levels,
+    };
+    await env.DATA.put(weatherProgressKey(cycleStart), JSON.stringify(progress));
+
+    if (failures > 0) {
       await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', {
-        phase: 'fetch',
-        ...(cappedLevels.length > 0 ? { reason: 'page_capped', capped: cappedLevels } : {}),
-        levels: perLevel,
+        phase: 'page',
+        reason: 'page_fetch_failed',
+        processed,
       });
     }
     return {
-      ok: !partial,
+      ok: failures === 0,
       layer: 'weather',
-      detail: {
-        phase: 'fetch',
-        slot: normSlot,
-        levels: perLevel,
-        pages,
-        ...(cappedLevels.length > 0 ? { capped: cappedLevels } : {}),
-      },
+      detail: { phase: 'page', cycleStart, processed, levels },
     };
   } catch (error: unknown) {
-    const detail = { phase: 'fetch', reason: 'exception', error: String(error) };
+    const detail = { phase: 'page', reason: 'exception', error: String(error) };
     await writeStatus(env, 'weather', normSlot, scheduledMs, 'failed', detail);
     return { ok: false, layer: 'weather', detail };
   }
 }
 
-/** raw 키 basename의 epochMs 파싱 — `{epochMs}-list_{level}_p{n}.json.gz` */
-const GDACS_RAW_LIST_RE = /\/(\d{13})-list_([a-z]+)_p(\d+)\.json\.gz$/;
-/** 레벨 체인 완주 마커 — fetch 단계가 페이지 체인을 끝까지 성공했을 때만 남긴다 (재리뷰 High2) */
-const GDACS_RAW_COMPLETE_RE = /\/(\d{13})-list_([a-z]+)_complete\.json\.gz$/;
-
-interface GdacsSlotRaw {
-  pageKeys: Array<{ key: string; epochMs: number; level: string; page: number }>;
-  /** 체인 완주가 검증된 레벨(소문자) — latest 교체 게이트 */
-  completeLevels: Set<string>;
+/** 커밋 슬롯이 읽어들인 청크 묶음 — 결손이 있으면 latest를 건드리지 않는다 */
+interface ChunkRead {
+  lists: WeatherAlertRecord[][];
+  missing: string[];
+  keys: string[];
 }
 
-/** 이 norm 슬롯에 적재된 GDACS raw 페이지 + 검증된 완주 레벨 발견.
- *  키가 scheduledMs 스탬프라 dt/hour prefix LIST로 찾고 슬롯 창으로 걸러낸다.
- *  재리뷰 High2: latest 갱신 게이트는 "raw 페이지가 있다"가 아니라 "체인 완주 마커"
- *  기준 — 중간 페이지 실패 슬롯의 부분 raw를 complete로 오인해 latest를 불완전
- *  데이터로 덮던 회귀의 수정. norm 커밋은 union이라 부분 raw도 그대로 싣는다.
- *  Med2: 마커는 존재만으로 complete가 아니다 — body의 세대(scheduledMs)·페이지 수가
- *  실제 raw 페이지(같은 세대, 1..pages 연속)와 일치할 때만 인정. */
-async function discoverGdacsSlotRaw(env: Env, normSlot: number): Promise<GdacsSlotRaw> {
-  const slotMsMin = normSlot * 1000;
-  const slotMsMax = slotMsMin + NORM_SLOT_SEC * 1000;
-  const dt = new Date(slotMsMin).toISOString().slice(0, 10);
-  const hour = new Date(slotMsMin).toISOString().slice(11, 13);
-  const prefix = `raw/gdacs/dt=${dt}/hour=${hour}/`;
-
-  const pageKeys: GdacsSlotRaw['pageKeys'] = [];
-  const markerKeys: Array<{ key: string; epochMs: number; level: string }> = [];
-  let cursor: string | undefined;
-  do {
-    const page = await env.DATA.list({ prefix, cursor });
-    for (const obj of page.objects) {
-      const m = GDACS_RAW_LIST_RE.exec(obj.key);
-      if (m) {
-        const epochMs = Number(m[1]);
-        if (epochMs >= slotMsMin && epochMs < slotMsMax) {
-          pageKeys.push({ key: obj.key, epochMs, level: m[2] ?? '', page: Number(m[3]) });
-        }
+async function readWeatherChunks(
+  env: Env,
+  cycleStart: number,
+  levels: Record<string, GdacsLevelProgress>,
+): Promise<ChunkRead> {
+  const lists: WeatherAlertRecord[][] = [];
+  const missing: string[] = [];
+  const keys: string[] = [];
+  for (const level of GDACS_ALERT_LEVELS) {
+    const pages = levels[level]?.pages ?? 0;
+    for (let page = 1; page <= pages; page += 1) {
+      const key = weatherChunkKey(cycleStart, level, page);
+      keys.push(key);
+      const obj = await env.DATA.get(key);
+      if (!obj) {
+        missing.push(`${level}:p${page}`);
         continue;
       }
-      const c = GDACS_RAW_COMPLETE_RE.exec(obj.key);
-      if (c) {
-        const epochMs = Number(c[1]);
-        if (epochMs >= slotMsMin && epochMs < slotMsMax) {
-          markerKeys.push({ key: obj.key, epochMs, level: c[2] ?? '' });
-        }
-      }
-    }
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
-
-  const completeLevels = new Set<string>();
-  for (const marker of markerKeys) {
-    try {
-      const obj = await env.DATA.get(marker.key);
-      if (!obj) continue;
-      const body = JSON.parse(await gunzipToText(await obj.arrayBuffer())) as {
-        scheduledMs?: unknown;
-        pages?: unknown;
-      };
-      const pages = typeof body.pages === 'number' ? body.pages : 0;
-      if (typeof body.scheduledMs !== 'number' || body.scheduledMs !== marker.epochMs) continue;
-      if (pages < 1) continue;
-      const genPages = new Set(
-        pageKeys.filter((p) => p.level === marker.level && p.epochMs === marker.epochMs).map((p) => p.page),
-      );
-      const chainIntact =
-        genPages.size === pages && Array.from({ length: pages }, (_, i) => i + 1).every((n) => genPages.has(n));
-      if (chainIntact) completeLevels.add(marker.level);
-    } catch {
-      // 마커 손상/gunzip 실패 — incomplete 취급 (보수적 방향)
+      lists.push((await obj.json()) as WeatherAlertRecord[]);
     }
   }
-  return { pageKeys, completeLevels };
+  return { lists, missing, keys };
 }
 
-/** GDACS norm 커밋 슬롯 (schedule.ts weather-commit, fetch 3분 뒤) — 이번 슬롯의 raw
- *  페이지를 되읽어 정규화·dedupe → norm 커밋 → latest 교체. 정규화는 파이프라인 전체에서
- *  여기 한 번만 돈다 (fetch 슬롯은 raw 적재 전용).
- *  TC 트랙 enrich는 rung ② 강등으로 비활성 (WEATHER_TC_TRACK_DEGRADED 참조).
- *  fetch 슬롯이 통째로 죽었으면 raw를 인라인 재fetch해 복구한다 — 그 분은 fetch+커밋을
- *  겹쳐 하므로 CPU 초과 위험이 있는 복구 전용 경로다 (정상 경로에선 발생하지 않는다). */
+/** 활성 TC에 트랙·콘 합성 — 캐시가 신선할 때만. 결손·낡음은 숨기지 않고 카운트로 보고. */
+async function mergeTcGeometry(
+  env: Env,
+  records: readonly WeatherAlertRecord[],
+  nowMs: number,
+): Promise<{ records: WeatherAlertRecord[]; tracks: number; cones: number; stale: number; missing: number }> {
+  const out: WeatherAlertRecord[] = [];
+  const cones: WeatherAlertRecord[] = [];
+  let tracks = 0;
+  let stale = 0;
+  let missing = 0;
+
+  for (const record of records) {
+    const isActiveTc = record.payload.gdacsEventType === 'TC' && record.status === 'active';
+    const ids = isActiveTc ? tcIdsOf(record) : null;
+    if (ids === null) {
+      out.push(record);
+      continue;
+    }
+    const obj = await env.DATA.get(tcTrackKey(ids.eventId, ids.episodeId));
+    if (!obj) {
+      missing += 1;
+      out.push(record);
+      continue;
+    }
+    let cache: TcTrackCache | null = null;
+    try {
+      cache = (await obj.json()) as TcTrackCache;
+    } catch {
+      cache = null;
+    }
+    const fetchedAtMs = cache ? Date.parse(cache.fetchedAt) : NaN;
+    if (!cache || !Number.isFinite(fetchedAtMs) || nowMs - fetchedAtMs > TC_CACHE_TTL_MS) {
+      stale += 1;
+      out.push(record);
+      continue;
+    }
+    const applied = applyTcGeometry(record, cache);
+    if (applied.record.geometry.type === 'LineString') tracks += 1;
+    out.push(applied.record);
+    if (applied.cone) cones.push(applied.cone);
+  }
+
+  return { records: [...out, ...cones], tracks, cones: cones.length, stale, missing };
+}
+
+/** GDACS 커밋 슬롯 (schedule.ts weather-commit — 사이클당 1개, 페이지 슬롯 뒤).
+ *  하는 일: 진행 마커 게이트 → 정규화된 청크 union·dedupe → TC 트랙·콘 합성 →
+ *  norm 커밋 → latest 교체 → tc-index 발행 → 스테이징 삭제.
+ *  **원문을 다시 파싱하지 않는다** (페이지 슬롯이 이미 정규화했다 — High1의 핵심).
+ *
+ *  게이트 규칙 (재리뷰 Med1 — 시간 간격 의존 제거):
+ *  - 마커 없음 / pending·failed 레벨 있음 / 청크 결손 → **아무것도 쓰지 않고** partial 기록.
+ *    다음 사이클이 처음부터 재시도한다 (인라인 재fetch 복구 경로 폐기 — 그 경로가
+ *    fetch+커밋을 한 분에 겹쳐 CPU 초과를 만들던 원인이기도 했다).
+ *  - capped 레벨 있음 → 데이터는 싣지만 결과는 ok:false + 원장 partial (재리뷰 Med2:
+ *    잘림을 ok로 기록하지 않는다). */
 export async function collectWeatherCommit(env: Env, scheduledMs: number): Promise<CollectSummary> {
+  const cycleStart = weatherCycleStartMs(scheduledMs);
   const normSlot = slotStartSec(scheduledMs, NORM_SLOT_SEC);
   const asOf = new Date(scheduledMs).toISOString();
 
   try {
-    const discovered = await discoverGdacsSlotRaw(env, normSlot);
-    const pageKeys = discovered.pageKeys;
-    const completeLevels = discovered.completeLevels;
-
-    let recovered = false;
-    if (pageKeys.length === 0) {
-      // fetch 슬롯이 이 슬롯에 raw를 남기지 못함 — raw를 인라인으로 채운 뒤 되읽는다
-      // (정규화 경로를 한 곳으로 유지 — 복구 경로만 fetch+커밋이 같은 분에 겹친다)
-      recovered = true;
-      const fetched = await fetchGdacsRawPages(env, scheduledMs);
-      if (fetched.okLevels === 0) {
-        const detail = { phase: 'commit', reason: 'no_raw_and_refetch_failed', levels: fetched.perLevel };
-        await writeStatus(env, 'weather', normSlot, scheduledMs, 'failed', detail);
-        return { ok: false, layer: 'weather', detail };
-      }
-      const rediscovered = await discoverGdacsSlotRaw(env, normSlot);
-      pageKeys.push(...rediscovered.pageKeys);
-      completeLevels.clear();
-      for (const level of rediscovered.completeLevels) completeLevels.add(level);
-      if (pageKeys.length === 0) {
-        const detail = { phase: 'commit', reason: 'no_raw_after_refetch', levels: fetched.perLevel };
-        await writeStatus(env, 'weather', normSlot, scheduledMs, 'failed', detail);
-        return { ok: false, layer: 'weather', detail };
-      }
+    const progress = await readWeatherProgress(env, cycleStart);
+    if (progress === null) {
+      const detail = { phase: 'commit', reason: 'no_progress', cycleStart };
+      await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', detail);
+      return { ok: false, layer: 'weather', detail };
     }
 
-    const lists: WeatherAlertRecord[][] = [];
-    for (const { key, epochMs } of pageKeys) {
-      const obj = await env.DATA.get(key);
-      if (!obj) continue;
-      const parsed = JSON.parse(await gunzipToText(await obj.arrayBuffer()));
-      // ingestedAt = 실제 fetch 시각 (raw 키 스탬프) — 유예 창 판정도 그 시점 기준
-      const normalized = normalizeGdacsList(parsed, epochMs);
-      if (normalized.ok) lists.push(normalized.records);
+    const unfinished = GDACS_ALERT_LEVELS.filter((l) => {
+      const state = progress.levels[l]?.state;
+      return state === undefined || state === 'pending' || state === 'failed';
+    });
+    if (unfinished.length > 0) {
+      const detail = {
+        phase: 'commit',
+        reason: 'chain_incomplete',
+        cycleStart,
+        unfinished,
+        levels: progress.levels,
+      };
+      await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', detail);
+      return { ok: false, layer: 'weather', detail };
     }
-    const patched = dedupeGdacs(lists);
 
-    // rung ② 강등 — TC 트랙 enrich 없음. 활성 TC 수만 원장·로그에 남긴다.
-    const activeTcs = patched.filter((r) => r.payload.gdacsEventType === 'TC' && r.status === 'active');
-    if (WEATHER_TC_TRACK_DEGRADED && activeTcs.length > 0) {
+    const chunks = await readWeatherChunks(env, cycleStart, progress.levels);
+    if (chunks.missing.length > 0) {
+      const detail = { phase: 'commit', reason: 'chunk_missing', cycleStart, missing: chunks.missing };
+      await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', detail);
+      return { ok: false, layer: 'weather', detail };
+    }
+
+    const deduped = dedupeGdacs(chunks.lists);
+    const merged = await mergeTcGeometry(env, deduped, scheduledMs);
+    const activeTcs = deduped.filter((r) => r.payload.gdacsEventType === 'TC' && r.status === 'active');
+
+    const outcome = await upsertNormSlot(
+      env.DATA,
+      'weather',
+      normSlot,
+      NORM_SLOT_SEC,
+      merged.records,
+      mergeByRevision,
+      { dropped: 0 },
+    );
+    await putSnapshotIfNewer(env.DATA, latestLayerKey('weather'), asOf, merged.records);
+
+    // 트랙 슬롯이 회전 대상으로 읽는 작은 인덱스 (latest 200KB를 다시 파싱하지 않기 위해)
+    const index: TcIndex = {
+      updatedAt: asOf,
+      tcs: activeTcs.flatMap((r) => {
+        const ids = tcIdsOf(r);
+        return ids ? [{ eventId: ids.eventId, episodeId: ids.episodeId, name: r.payload.event }] : [];
+      }),
+    };
+    await env.DATA.put(TC_INDEX_KEY, JSON.stringify(index));
+
+    // 스테이징 정리 — 실패해도 수집 결과를 뒤집지 않는다 (잔재는 daily scan이 청소)
+    await Promise.all(
+      [...chunks.keys, weatherProgressKey(cycleStart)].map((key) =>
+        env.DATA.delete(key).catch(() => undefined),
+      ),
+    );
+
+    const capped = GDACS_ALERT_LEVELS.filter((l) => progress.levels[l]?.state === 'capped');
+    if (capped.length > 0) {
+      await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', {
+        phase: 'commit',
+        reason: 'page_capped',
+        capped,
+        records: merged.records.length,
+      });
+    }
+    if (merged.stale > 0 || merged.missing > 0) {
       await writeStatus(env, 'weather', normSlot, scheduledMs, 'degraded', {
         phase: 'commit',
-        reason: 'tc_track_disabled',
+        reason: 'tc_track_cache',
+        stale: merged.stale,
+        missing: merged.missing,
         activeTcs: activeTcs.length,
       });
     }
-
-    const outcome = await upsertNormSlot(env.DATA, 'weather', normSlot, NORM_SLOT_SEC, patched, mergeByRevision, {
-      dropped: 0,
-    });
-
-    // latest 교체 — 전 레벨 체인 완주 마커가 있을 때만 (재리뷰 High2:
-    // 부분 fetch 슬롯에서 실패 레벨 경보가 latest에서 사라지는 회귀 방지 —
-    // 이전 스냅샷 유지. norm은 union이라 무해)
-    const incompleteLevels = GDACS_ALERT_LEVELS.filter((l) => !completeLevels.has(l.toLowerCase()));
-    if (incompleteLevels.length === 0) {
-      await putSnapshotIfNewer(env.DATA, latestLayerKey('weather'), asOf, patched);
-    } else {
-      // incomplete 슬롯은 원장에 partial 기록 — latest 미갱신 사유의 정직 표시
-      await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', {
+    if (merged.records.length === 0) {
+      await writeStatus(env, 'weather', normSlot, scheduledMs, 'empty', {
         phase: 'commit',
-        reason: 'incomplete_levels',
-        incomplete: incompleteLevels,
-        pages: pageKeys.length,
+        pages: chunks.keys.length,
       });
     }
 
-    if (patched.length === 0 && incompleteLevels.length === 0) {
-      await writeStatus(env, 'weather', normSlot, scheduledMs, 'empty', { phase: 'commit', pages: pageKeys.length });
-    }
     return {
-      ok: true,
+      ok: capped.length === 0,
       layer: 'weather',
       detail: {
         phase: 'commit',
+        cycleStart,
         slot: normSlot,
-        pages: pageKeys.length,
-        recovered,
-        records: patched.length,
-        ...(incompleteLevels.length > 0 ? { incomplete: incompleteLevels, latestSkipped: true } : {}),
+        pages: chunks.keys.length,
+        records: merged.records.length,
         activeTcs: activeTcs.length,
-        ...(WEATHER_TC_TRACK_DEGRADED ? { tracks: 'degraded' } : {}),
+        tracks: merged.tracks,
+        cones: merged.cones,
+        trackCacheStale: merged.stale,
+        trackCacheMissing: merged.missing,
+        ...(capped.length > 0 ? { capped } : {}),
         norm: { written: outcome.written, generation: outcome.generation, records: outcome.records },
       },
     };
@@ -523,6 +661,91 @@ export async function collectWeatherCommit(env: Env, scheduledMs: number): Promi
     return { ok: false, layer: 'weather', detail };
   }
 }
+
+/** TC 트랙 슬롯 (schedule.ts weather-track — 시간당 2회, 커밋 뒤).
+ *  커밋이 발행한 tc-index를 회전하며 TC_PER_SLOT건의 getgeometry를 가져와
+ *  트랙 LineString + 예보콘 Polygon을 캐시한다 (커밋이 다음 사이클에 합성).
+ *
+ *  왜 별 슬롯인가 (재리뷰 High2 — 이전 강등 해제):
+ *  getgeometry 응답은 실측 307KB이고 parse만으로 커밋 슬롯 예산을 먹었다. 커밋에서
+ *  떼어내 1건씩 회전시키면 슬롯 CPU가 예측 가능해진다. 대가는 트랙 신선도 —
+ *  활성 TC N건이면 갱신 주기가 30분 × N이다 (N=5면 2.5시간). TC 트랙은 3~6시간마다
+ *  점이 하나 붙는 데이터라 수용 가능하고, 캐시가 TC_CACHE_TTL_MS를 넘기면
+ *  합성하지 않고 Point로 폴백하며 원장에 degraded로 남는다. */
+export async function collectWeatherTracks(env: Env, scheduledMs: number): Promise<CollectSummary> {
+  const normSlot = slotStartSec(scheduledMs, NORM_SLOT_SEC);
+
+  try {
+    const obj = await env.DATA.get(TC_INDEX_KEY);
+    if (!obj) {
+      return { ok: true, layer: 'weather', detail: { phase: 'track', reason: 'no_index' } };
+    }
+    const index = (await obj.json()) as TcIndex;
+    const tcs = Array.isArray(index?.tcs) ? index.tcs : [];
+    if (tcs.length === 0) {
+      return { ok: true, layer: 'weather', detail: { phase: 'track', tcs: 0 } };
+    }
+
+    // 회전: 트랙 슬롯은 30분마다 한 번 오므로 사이클 인덱스를 그대로 오프셋으로 쓴다
+    const cycle = Math.floor(scheduledMs / (WEATHER_CYCLE_SEC * 1000));
+    const fetched: Array<Record<string, unknown>> = [];
+    let failures = 0;
+
+    for (let n = 0; n < TC_PER_SLOT; n += 1) {
+      const target = tcs[(cycle + n) % tcs.length];
+      if (!target) break;
+      const res = await fetchTextWithRetry(
+        gdacsGeometryUrl('TC', target.eventId, target.episodeId),
+        GDACS_TIMEOUT_MS,
+        GDACS_RETRY_DELAY_MS,
+      );
+      if (!res.ok) {
+        failures += 1;
+        fetched.push({ eventId: target.eventId, ok: false, reason: res.reason, status: res.status });
+        continue;
+      }
+      const geometry = buildTcGeometry(JSON.parse(res.text));
+      const cache: TcTrackCache = {
+        eventId: target.eventId,
+        episodeId: target.episodeId,
+        fetchedAt: new Date(scheduledMs).toISOString(),
+        track: geometry.track,
+        cone: geometry.cone,
+        centroid: geometry.centroid,
+      };
+      await env.DATA.put(tcTrackKey(target.eventId, target.episodeId), JSON.stringify(cache));
+      fetched.push({
+        eventId: target.eventId,
+        episodeId: target.episodeId,
+        ok: true,
+        trackPoints: geometry.track?.coordinates.length ?? 0,
+        conePoints: geometry.cone?.coordinates[0]?.length ?? 0,
+      });
+    }
+
+    if (failures > 0) {
+      await writeStatus(env, 'weather', normSlot, scheduledMs, 'partial', {
+        phase: 'track',
+        reason: 'geometry_fetch_failed',
+        fetched,
+      });
+    }
+    return { ok: failures === 0, layer: 'weather', detail: { phase: 'track', tcs: tcs.length, fetched } };
+  } catch (error: unknown) {
+    const detail = { phase: 'track', reason: 'exception', error: String(error) };
+    await writeStatus(env, 'weather', normSlot, scheduledMs, 'failed', detail);
+    return { ok: false, layer: 'weather', detail };
+  }
+}
+
+const GDELT_TIMEOUT_MS = 15_000;
+const GDELT_ZIP_TIMEOUT_MS = 30_000;
+const GDELT_RETRY_DELAY_MS = 2_000;
+/** news 파싱 팻파일 가드 — 해제 CSV가 이 크기를 넘으면 raw-only 강등 (unzip+스캔 CPU 폭주 방어.
+ *  실측: 공식 masterfilelist 395,845개 중 최대 해제 22.6MB — 스캔만 ~20ms로 하드 한도 초과.
+ *  2026-08-19 재조정 8MB → 2MB: 평시 export CSV는 447KB이고(실측) 전체 경로가 ~3ms다.
+ *  2MB면 평시의 4배까지 허용하면서 하드 10ms 안에 남는다. */
+const MAX_NEWS_CSV_BYTES = 2 * 1024 * 1024;
 
 /** GDELT fetch 슬롯 (schedule.ts news-fetch) — lastupdate → export zip → raw PUT만.
  *  파싱·norm 커밋은 2분 뒤 news-process 슬롯이 raw zip을 되읽어 수행 (CPU 분할).
@@ -623,6 +846,9 @@ export async function collectNewsProcess(env: Env, scheduledMs: number): Promise
       return { ok: false, layer: 'news', detail };
     }
 
+    // 원장·로그에 입력 규모를 남긴다 (High1 후속): 이 슬롯의 CPU는 **행 수에 비례**하므로
+    // tail의 cpuTime을 파일 크기와 대조할 수 있어야 원인을 판정할 수 있다.
+    const csvBytes = csv.length;
     const { records, dropped, rows } = buildNewsRecords(csv, ref.fileMs, scheduledMs);
 
     const outcome = await upsertNormSlot(env.DATA, 'news', normSlot, NORM_SLOT_SEC, records, mergeById, {
@@ -642,6 +868,7 @@ export async function collectNewsProcess(env: Env, scheduledMs: number): Promise
         slot: normSlot,
         file: ref.url,
         rows,
+        csvBytes,
         cells: records.length,
         dropped,
         recovered,

@@ -111,6 +111,12 @@ export interface WeatherAlertPayload {
    *  interval 슬라이스에서 사라진다(실측 422/422 소실). 미해제 경보는 validTo=null로
    *  두고 원본 todate는 여기에 보존한다. 해제된 경보는 validTo와 같은 값. */
   observedUntil?: Iso | null;
+  /** optional 추가 (2026-08-19): 같은 경보에서 파생된 지오메트리 종류 구분.
+   *  'track' = TC 중심 경로 LineString(레코드 본체), 'cone' = 예보 불확실성 콘 Polygon
+   *  (sourceId에 `:cone` 접미가 붙은 파생 레코드). 없으면 리스트 그대로의 Point.
+   *  GDACS getgeometry는 **TC에만** 트랙/콘을 준다 — 홍수 등 비TC 경보의 영역 폴리곤은
+   *  이벤트당 1콜이라 $0 예산에서 미수집 (백로그 — PLAN §4.2). */
+  gdacsGeometryKind?: 'track' | 'cone';
 }
 
 /** 확정 코어 (Phase 0b — 이후 필드 추가는 optional로만, 기존 필드 변경 금지).

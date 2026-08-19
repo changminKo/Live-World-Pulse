@@ -81,8 +81,8 @@ describe('pickColumns — 탭 워커 표적 추출 (CPU 사다리)', () => {
 });
 
 describe('buildNewsRecords — 0.5° 셀 집계 Occurrence<NewsPayload>', () => {
-  test('같은 셀 집계: articleCount=NumArticles(33) 합·placeName 최빈값·sampleUrl은 NumMentions 최대 기사', () => {
-    // Arrange: Tokyo 셀 3행 (articles 2+3+1=6, place 2:1, mentions 최대는 두 번째) + Seoul 셀 1행
+  test('같은 셀 집계: articleCount=NumArticles(33) 합·placeName·sampleUrl은 NumMentions 최대 기사', () => {
+    // Arrange: Tokyo 셀 3행 (articles 2+3+1=6, mentions 최대는 두 번째 행) + Seoul 셀 1행
     const csv = [
       makeLine({ place: 'Tokyo, Tokyo, Japan', mentions: '10', articles: '2', url: 'https://example.com/a' }),
       makeLine({ place: 'Tokyo, Tokyo, Japan', mentions: '40', articles: '3', url: 'https://example.com/b' }),
@@ -171,15 +171,15 @@ describe('buildNewsRecords — 0.5° 셀 집계 Occurrence<NewsPayload>', () => 
     expect(ranks.get(50)).toBe(3);
   });
 
-  test('placeName 최빈값 동률은 사전순 최소 — 결정론(내용 해시 안정)', () => {
-    const csv = [
-      makeLine({ place: 'Zeta' }),
-      makeLine({ place: 'Alpha' }),
-    ].join('\n');
+  test('placeName은 NumMentions 최대 행의 지명 — 동률이면 먼저 온 행 (결정론: 내용 해시 안정)', () => {
+    // 2026-08-19 CPU 사다리: 최빈값 집계(셀별 Map)를 대표 행 채택으로 좁혔다
+    // (행마다 Map get+set 2회 = 2,200행에서 ~1.5ms). GDELT 행 순서는 결정론적이라
+    // 같은 파일을 다시 처리하면 같은 결과가 나온다.
+    const tie = [makeLine({ place: 'Zeta', mentions: '7' }), makeLine({ place: 'Alpha', mentions: '7' })].join('\n');
+    expect(buildNewsRecords(tie, FILE_MS, NOW).records[0]!.payload.placeName).toBe('Zeta');
 
-    const { records } = buildNewsRecords(csv, FILE_MS, NOW);
-
-    expect(records[0]!.payload.placeName).toBe('Alpha');
+    const clear = [makeLine({ place: 'Zeta', mentions: '3' }), makeLine({ place: 'Alpha', mentions: '9' })].join('\n');
+    expect(buildNewsRecords(clear, FILE_MS, NOW).records[0]!.payload.placeName).toBe('Alpha');
   });
 
   test('records는 id 정렬 — 같은 파일 재처리 시 동일 직렬화', () => {

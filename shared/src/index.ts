@@ -7,3 +7,4 @@ export * from './normalize-usgs';
 export * from './r2-keys';
 export * from './r2-contract';
 export * from './url-state';
+export * from './legacy';

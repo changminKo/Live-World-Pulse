@@ -4,7 +4,10 @@
  *    ';'를 파라미터 구분자로 먹어 Green 단독 + iscurrent=true 100건 캡으로 동작
  *    (current Orange가 캡에 잘려나가는 것 실측 확인) → **레벨별 3콜 + dedupe**로 우회.
  *  - TC 트랙포인트는 Point가 아니라 소형 Polygon (Class=Point_Polygon_Point_{n})
- *    → ring 평균 centroid 추출, n 순서로 LineString 구성.
+ *    → ring 평균 centroid 추출, n 순서로 LineString 구성. 같은 getgeometry 응답에
+ *    예보 불확실성 콘(Class=Poly_Cones, 단일 ring 215점)도 들어 있어 추가 콜 없이 쓴다.
+ *  - **비TC 경보(홍수·산불 등)의 영역 폴리곤은 수집하지 않는다** — getgeometry가
+ *    이벤트당 1콜이라 활성 400건이면 400콜이고, $0·10ms 예산에 들어가지 않는다 (백로그).
  *  - 타임스탬프는 UTC인데 zone 표기가 없다 ("2026-08-19T05:22:24") → Z 보정 필수. */
 import { validateLonLat } from '../coords';
 import type { NormalizeOutcome } from './usgs';
@@ -19,16 +22,17 @@ export const RECENT_EXPIRED_WINDOW_MS = 48 * 3600_000;
 
 /** 페이지 크기 — 서버 기본이자 상한 100 (Swagger·실측 2026-08-19) */
 export const GDACS_PAGE_SIZE = 100;
-/** 레벨당 페이지 안전 캡 — 히스토리 무한 페이징 방어 + CPU 예산. 캡 도달 = capped 신호로 기록.
- *  2026-08-19 CPU 사다리 재조정으로 10 → 4:
- *  - 커밋 슬롯은 이 슬롯의 raw 페이지를 전부 gunzip+parse+normalize한다. 프로덕션
- *    cpuTime 실측 2점(4페이지 20ms / 16페이지 59ms)의 선형 모델이 ≈ 7ms + 3.3ms/페이지 —
- *    Green 10페이지(총 12)면 ~47ms까지 오른다. 4페이지 캡(총 6)이면 ~27ms.
- *  - GDACS SEARCH는 iscurrent 파라미터를 무시하지만(실측: 지정/미지정 응답 바이트 동일)
- *    current를 앞쪽 페이지에 정렬해 돌려준다 — current가 0인 페이지에서 조기 종료하므로
- *    평상시엔 캡에 닿지 않고, Green current 실측 총량 ~425건이라 4페이지가 사실상 전량이다.
- *  - 잘림은 숨기지 않는다: capped 신호 → status 원장 `page_capped`. */
-export const GDACS_PAGE_CAP = 4;
+/** 레벨당 페이지 안전 캡 — 히스토리 무한 페이징 방어. 캡 도달 = capped 신호로 기록.
+ *  2026-08-19 재리뷰 Med2로 4 → 8 복원:
+ *  - 캡 4는 실제 데이터를 잘랐다. 실측(2026-08-19 23:16 UTC) Green current 분포는
+ *    p1~p3 각 100 / p4 93 / p5 32 / p6 0 — 즉 **총 425건이고 종료 판정은 p6**인데,
+ *    캡 4는 p5의 32건을 통째로 버리면서 fetch를 ok로 기록했다.
+ *  - CPU는 캡이 아니라 **분할**로 해결한다: 페이지는 슬롯당 PAGES_PER_SLOT개씩만
+ *    가져와 즉시 정규화하고(collect.ts collectWeatherPages), 커밋 슬롯은 정규화된
+ *    청크만 읽는다. 캡을 올려도 invocation당 파싱량은 늘지 않는다.
+ *  - 캡 도달은 여전히 잘림이다: status 원장 `page_capped` + 커밋 결과 partial
+ *    (ok 아님 — 재리뷰 Med2). */
+export const GDACS_PAGE_CAP = 8;
 
 export function gdacsListUrl(level: GdacsAlertLevel, page = 1): string {
   return `https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?alertlevel=${level}&pagenumber=${page}&pagesize=${GDACS_PAGE_SIZE}`;
@@ -159,24 +163,6 @@ export function normalizeGdacsList(
   return { ok: true, records, dropped };
 }
 
-/** fetch 슬롯용 초경량 스캐너 — JSON.parse 없이 응답 텍스트에서 feature/current 개수만 센다.
- *  fetch 슬롯의 목적은 raw 적재이고, 정규화는 커밋 슬롯이 raw를 되읽어 한 번만 한다
- *  (중복 정규화 제거 = CPU 사다리 rung ①). 페이징 종료 판정에만 쓰는 근사치라
- *  구조 검증은 커밋 슬롯의 normalizeGdacsList가 담당한다. */
-export function scanGdacsPage(text: string): { features: number; current: number } {
-  return { features: countOccurrences(text, '"eventid"'), current: countOccurrences(text, '"iscurrent":"true"') };
-}
-
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  let at = haystack.indexOf(needle);
-  while (at >= 0) {
-    count += 1;
-    at = haystack.indexOf(needle, at + needle.length);
-  }
-  return count;
-}
-
 /** 레벨별 3콜 union — 같은 (eventid, episodeid)는 revision(datemodified) 큰 쪽 유지 */
 export function dedupeGdacs(lists: readonly WeatherAlertRecord[][]): WeatherAlertRecord[] {
   const byId = new Map<string, WeatherAlertRecord>();
@@ -194,6 +180,16 @@ export interface TcTrack {
   centroid: [lon: number, lat: number] | null;
 }
 
+/** getgeometry 1회에서 뽑는 TC 지오메트리 전부 (2026-08-19 실측 응답 구조):
+ *  - `Point_Centroid` ×1 — 현재 중심
+ *  - `Point_Polygon_Point_{n}` ×N — 트랙포인트(소형 Polygon) → ring centroid → LineString
+ *  - `Poly_Cones` ×1 — 예보 불확실성 콘 (단일 ring 215점, ~4KB)
+ *  - `Poly_Red|Orange|Green` ×10씩, `Line_Line_{n}` — 풍속 반경/구간선 (미사용)
+ *  cone은 파생 레코드(sourceId `:cone`)의 지오메트리로 쓴다 — 같은 응답이라 추가 콜 0. */
+export interface TcGeometry extends TcTrack {
+  cone: { type: 'Polygon'; coordinates: Position[][] } | null;
+}
+
 /** 소형 Polygon ring 평균 centroid (마지막 닫힘 중복점 제거) — 시각 표시용 근사 */
 function ringCentroid(ring: unknown): [number, number] | null {
   if (!Array.isArray(ring) || ring.length < 3) return null;
@@ -207,15 +203,28 @@ function ringCentroid(ring: unknown): [number, number] | null {
   return validateLonLat(lon, lat);
 }
 
-/** getgeometry 응답 → TC 트랙 LineString (트랙포인트 Polygon centroid, index 순).
+/** 폴리곤 ring 좌표 검증·변환 — 유효 좌표 3점 미만이면 null (렌더 불가) */
+function validRing(ring: unknown): Position[] | null {
+  if (!Array.isArray(ring)) return null;
+  const out: Position[] = [];
+  for (const c of ring) {
+    const pos = Array.isArray(c) ? validateLonLat(c[0], c[1]) : null;
+    if (pos) out.push([pos[0], pos[1]]);
+  }
+  return out.length >= 3 ? out : null;
+}
+
+/** getgeometry 응답 → TC 트랙 LineString + 예보 콘 Polygon + 중심점.
+ *  트랙은 트랙포인트 Polygon의 ring centroid를 index 순으로 이은 선이다.
  *  주의: 날짜변경선을 넘는 트랙은 lon이 ±180에서 점프한다 — 저장은 원본 그대로,
  *  보간·렌더 wrap은 소비 측 책임 (PLAN 테스트 규칙의 보간 경계와 동일 계약). */
-export function buildTcTrack(geomResp: unknown): TcTrack {
+export function buildTcGeometry(geomResp: unknown): TcGeometry {
   const features = (geomResp as { features?: unknown })?.features;
-  if (!Array.isArray(features)) return { track: null, centroid: null };
+  if (!Array.isArray(features)) return { track: null, centroid: null, cone: null };
 
   const points: Array<{ index: number; pos: [number, number] }> = [];
   let centroid: [number, number] | null = null;
+  let cone: TcGeometry['cone'] = null;
 
   for (const f of features as GdacsFeature[]) {
     const cls = strOrNull((f?.properties as { Class?: unknown } | undefined)?.Class);
@@ -225,6 +234,12 @@ export function buildTcTrack(geomResp: unknown): TcTrack {
     if (cls === 'Point_Centroid' && geom.type === 'Point') {
       const c = geom.coordinates as unknown[];
       centroid = Array.isArray(c) ? validateLonLat(c[0], c[1]) : null;
+      continue;
+    }
+    if (cls === 'Poly_Cones' && geom.type === 'Polygon') {
+      const rings = geom.coordinates as unknown[];
+      const outer = Array.isArray(rings) ? validRing(rings[0]) : null;
+      if (outer) cone = { type: 'Polygon', coordinates: [outer] };
       continue;
     }
     const m = /^Point_Polygon_Point_(\d+)$/.exec(cls);
@@ -240,5 +255,69 @@ export function buildTcTrack(geomResp: unknown): TcTrack {
     points.length >= 2
       ? { type: 'LineString' as const, coordinates: points.map((p): Position => [p.pos[0], p.pos[1]]) }
       : null;
+  return { track, centroid, cone };
+}
+
+/** 하위 호환 별칭 — 트랙만 쓰는 호출부/테스트 유지 (cone은 buildTcGeometry로) */
+export function buildTcTrack(geomResp: unknown): TcTrack {
+  const { track, centroid } = buildTcGeometry(geomResp);
   return { track, centroid };
+}
+
+/** TC 트랙 캐시 본문 — 트랙 슬롯이 쓰고 커밋 슬롯이 읽는다 (getgeometry 응답의 요약).
+ *  fetchedAt으로 신선도를 판정한다 — 낡은 캐시는 합성하지 않고 Point 폴백 + 원장 기록. */
+export interface TcTrackCache {
+  eventId: number;
+  episodeId: number;
+  fetchedAt: string;
+  track: TcGeometry['track'];
+  cone: TcGeometry['cone'];
+  centroid: [lon: number, lat: number] | null;
+}
+
+/** 활성 TC 인덱스 본문 — 커밋 슬롯이 발행, 트랙 슬롯이 회전 대상으로 읽는다 */
+export interface TcIndex {
+  updatedAt: string;
+  tcs: Array<{ eventId: number; episodeId: number; name: string | null }>;
+}
+
+/** 경보 레코드에서 (eventId, episodeId) 복원 — sourceId = `${eventId}:${episodeId}` 계약 */
+export function tcIdsOf(record: WeatherAlertRecord): { eventId: number; episodeId: number } | null {
+  const parts = record.sourceId.split(':');
+  if (parts.length !== 2) return null; // 파생(:cone) 레코드는 대상 아님
+  const eventId = Number(parts[0]);
+  const episodeId = Number(parts[1]);
+  return Number.isInteger(eventId) && Number.isInteger(episodeId) ? { eventId, episodeId } : null;
+}
+
+/** TC 트랙 캐시 합성 (커밋 슬롯) — 원본 경보의 지오메트리를 트랙 LineString으로 바꾸고,
+ *  콘이 있으면 파생 폴리곤 레코드를 하나 더 만든다.
+ *  - 파생 레코드 id = `gdacs:{eventId}:{episodeId}:cone` (§5 `${source}:${sourceId}` 계약 유지)
+ *  - 시간·등급·status는 원본과 동일 (같은 경보의 다른 표현이므로 슬라이스 결과가 갈리면 안 된다)
+ *  - centroid는 캐시의 Point_Centroid가 있으면 그것을(더 정확), 없으면 원본 유지 */
+export function applyTcGeometry(
+  record: WeatherAlertRecord,
+  cache: TcTrackCache,
+): { record: WeatherAlertRecord; cone: WeatherAlertRecord | null } {
+  const centroid = cache.centroid ?? record.centroid;
+  const withTrack: WeatherAlertRecord =
+    cache.track === null
+      ? { ...record, centroid }
+      : {
+          ...record,
+          geometry: cache.track,
+          centroid,
+          payload: { ...record.payload, gdacsGeometryKind: 'track' },
+        };
+  if (cache.cone === null) return { record: withTrack, cone: null };
+  const coneSourceId = `${record.sourceId}:cone`;
+  const cone: WeatherAlertRecord = {
+    ...record,
+    id: `gdacs:${coneSourceId}`,
+    sourceId: coneSourceId,
+    geometry: cache.cone,
+    centroid,
+    payload: { ...record.payload, gdacsGeometryKind: 'cone' },
+  };
+  return { record: withTrack, cone };
 }

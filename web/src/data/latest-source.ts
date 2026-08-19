@@ -134,6 +134,18 @@ export interface LayerSnapshot<R> {
 
 export type LayerIngest<R> = (doc: unknown, nowMs: number) => LayerSnapshot<R> | null;
 
+/** 단일 asOf 레이어 소스 — 폴 수신(ingest)과 **시간 경과 재평가(reslice)**를 분리한다.
+ *  reslice가 필요한 이유 (재리뷰 Med5): weather는 interval, news는 window라 asOf가
+ *  그대로여도 시계가 흐르면 표시 집합이 바뀐다(경보 만료·뉴스 window 이탈). asOf가
+ *  같으면 재계산을 건너뛰던 이전 판은 만료를 다음 수집(기상 60분·뉴스 15분)까지 미뤘다. */
+export interface LayerSource<R> {
+  ingest: LayerIngest<R>;
+  /** 마지막 수신 데이터로 시각 T만 바꿔 다시 슬라이스. 결과가 같으면 같은 참조를 반환한다
+   *  (레이어 memo 히트 유지 — 틱마다 attribute 재계산을 만들지 않는다). 수신 이력이
+   *  없으면 null. */
+  reslice: (nowMs: number) => LayerSnapshot<R> | null;
+}
+
 const NEWS_WINDOW_MS =
   TEMPORAL_SPEC.news.temporalMode === 'instant' ? TEMPORAL_SPEC.news.windowMs : 7_200_000;
 
@@ -144,44 +156,66 @@ interface SimpleLayerRaw<R> {
 }
 
 /** 참조 안정 단일 레이어 병합기 — asOf 동일하면 직전 스냅샷(배열 참조) 그대로 반환.
- *  weather(30분)·news(15분) 슬롯이라 60s 폴 대부분에서 무변경 — 레이어 memo 히트가 기본 경로.
+ *  weather(60분 사이클)·news(15분 슬롯)이라 60s 폴 대부분에서 무변경 — 레이어 memo 히트가 기본 경로.
  *  slice는 asOf가 바뀐 폴에서만 재계산 — 슬롯 사이 만료(interval validTo 경과 등)는
  *  다음 슬롯 도착까지 유지되지만 상태 배지 tolerance가 지연을 정직 표기한다. */
 function createSimpleSource<R>(
   layerOf: (doc: LatestDoc) => { asOf: string; records: R[] } | undefined,
   slice: (records: R[], asOfMs: number | null, nowMs: number) => R[],
-): LayerIngest<R> {
+): LayerSource<R> {
   let prev: SimpleLayerRaw<R> | null = null;
   let prevSnapshot: LayerSnapshot<R> | null = null;
 
-  return function ingest(doc: unknown, nowMs: number): LayerSnapshot<R> | null {
-    const layers = (doc as LatestDoc | null)?.layers;
-    if (layers === undefined || layers === null || typeof layers !== 'object') return null;
-
-    const layer = layerOf(doc as LatestDoc);
-    if (layer === undefined) {
-      // 레이어 미수집 (partial 조립) — 빈 세계 (직전 상태도 비운다)
-      prev = null;
-      prevSnapshot = { records: [], asOfMs: null };
-      return prevSnapshot;
-    }
-    if (!Array.isArray(layer.records)) return null; // 계약 위반 — 부분 성공으로 위장 금지
-
-    if (prev !== null && prev.asOfIso === layer.asOf && prevSnapshot !== null) {
-      return prevSnapshot; // 무변경 — 기존 레코드 배열 참조 유지 (레이어 memo 키)
-    }
-
-    const at = Date.parse(layer.asOf);
-    const asOfMs = Number.isFinite(at) ? at : null;
-    prev = { asOfIso: layer.asOf, asOfMs, records: layer.records };
-    prevSnapshot = { records: slice(layer.records, asOfMs, nowMs), asOfMs };
+  /** 슬라이스 결과가 직전과 같은 집합이면 직전 배열 참조를 유지한다 — 틱마다 새 배열을
+   *  만들면 asOf가 그대로인데도 deck attribute가 재계산된다 (PLAN §8.3 병목 ①). */
+  const commit = (records: R[], asOfMs: number | null): LayerSnapshot<R> => {
+    const before = prevSnapshot;
+    const same =
+      before !== null &&
+      before.asOfMs === asOfMs &&
+      before.records.length === records.length &&
+      records.every((r, i) => r === before.records[i]);
+    prevSnapshot = same && before !== null ? before : { records, asOfMs };
     return prevSnapshot;
+  };
+
+  return {
+    ingest(doc: unknown, nowMs: number): LayerSnapshot<R> | null {
+      const layers = (doc as LatestDoc | null)?.layers;
+      if (layers === undefined || layers === null || typeof layers !== 'object') return null;
+
+      const layer = layerOf(doc as LatestDoc);
+      if (layer === undefined) {
+        // 레이어 미수집 (partial 조립) — 빈 세계 (직전 상태도 비운다)
+        prev = null;
+        prevSnapshot = { records: [], asOfMs: null };
+        return prevSnapshot;
+      }
+      if (!Array.isArray(layer.records)) return null; // 계약 위반 — 부분 성공으로 위장 금지
+
+      // asOf 동일 = 원본 불변. 새로 파싱된 객체를 채택하지 않고 **직전 원본을 유지**한 채
+      // 시각 T만 갱신해 다시 슬라이스한다 (Med5 재슬라이스 + 참조 안정성 동시 충족 —
+      // 새 파스 객체를 채택하면 내용이 같아도 identity가 달라져 매 폴 attribute가 재계산된다).
+      if (prev !== null && prev.asOfIso === layer.asOf) {
+        return commit(slice(prev.records, prev.asOfMs, nowMs), prev.asOfMs);
+      }
+
+      const at = Date.parse(layer.asOf);
+      const asOfMs = Number.isFinite(at) ? at : null;
+      prev = { asOfIso: layer.asOf, asOfMs, records: layer.records };
+      return commit(slice(layer.records, asOfMs, nowMs), asOfMs);
+    },
+
+    reslice(nowMs: number): LayerSnapshot<R> | null {
+      if (prev === null) return null;
+      return commit(slice(prev.records, prev.asOfMs, nowMs), prev.asOfMs);
+    },
   };
 }
 
 /** weather = Interval — validFrom ≤ T < validTo 겹침 슬라이스 (TEMPORAL_SPEC.weather).
  *  cancelled 숨김은 시간 계약이 아니라 표시 정책 (shared temporal.ts 주석) — 여기서 적용. */
-export function createWeatherSource(): LayerIngest<WeatherAlertRecord> {
+export function createWeatherSource(): LayerSource<WeatherAlertRecord> {
   return createSimpleSource(
     (doc) => doc.layers.weather,
     (records, _asOfMs, nowMs) =>
@@ -192,7 +226,7 @@ export function createWeatherSource(): LayerIngest<WeatherAlertRecord> {
 /** news = Occurrence — [T - 2시간, T] window (TEMPORAL_SPEC.news — 수집 지연 내성).
  *  주의: occurredAt은 15분 슬롯 '종료' 시각이라 클라이언트 시계보다 미래일 수 있음
  *  (실측: ingestedAt 09:26 < occurredAt 09:30) — T = max(now, asOf)로 최신 슬롯 소실 방지. */
-export function createNewsSource(): LayerIngest<NewsRecord> {
+export function createNewsSource(): LayerSource<NewsRecord> {
   return createSimpleSource(
     (doc) => doc.layers.news,
     (records, asOfMs, nowMs) =>

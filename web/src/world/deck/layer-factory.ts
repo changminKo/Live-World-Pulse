@@ -6,12 +6,14 @@ import type {
   FlightRecord,
   LayerId,
   NewsRecord,
+  Position,
   SeverityRank,
   WeatherAlertRecord,
 } from '@lwp/shared';
 import type { QuakeArrival } from '../../data/live-store';
 import type { FlightRegionSlice } from '../../data/latest-source';
 import { FLIGHT_MESH } from './flight-mesh';
+import { hatchPolygon } from './hatch';
 import { SQUARE_FRAME_MESH, SQUARE_MESH } from './square-mesh';
 
 /** deck 레이어 팩토리 — DESIGN §2.1(shape 1차 식별자)·§2.2(rank 색·크기 이중 인코딩).
@@ -49,6 +51,8 @@ const FLIGHT_RGB: [number, number, number] = [76, 201, 240];
 const SELECTED_RGB: [number, number, number, number] = [255, 255, 255, 255];
 /** 경보 폴리곤 채움 알파 (낮게 — 아래 지도가 비쳐야 함) */
 const ALERT_FILL_ALPHA = 45;
+/** 빗금 알파 — 채움보다 진하게(형태를 읽히게), 마커보다 연하게 */
+const ALERT_HATCH_ALPHA = 110;
 
 const quakeRadiusPx = (d: EarthquakeRecord): number => {
   const mag = d.payload.magnitude ?? 1;
@@ -59,9 +63,18 @@ const quakeRadiusPx = (d: EarthquakeRecord): number => {
 const flightSizeMeters = (zoom: number): number =>
   Math.max(1_500, Math.min(90_000, 140_000 / 2 ** zoom));
 
-/** 줌별 사각 마커 기준 크기(m) — 항공기보다 약간 작게 (마커 밀도 419+196) */
+/** 줌별 사각 마커 기준 크기(m) — 항공기보다 약간 작게 (마커 밀도 419+196).
+ *  `120_000 / 2**zoom`은 화면상 약 1.5px로 **줌 무관 상수 크기**를 만든다 (m/px가
+ *  78_271/2**zoom이므로). 채운 사각(뉴스)은 1.5px면 점으로 읽히고 정중앙 픽킹도 잡힌다. */
 const squareSizeMeters = (zoom: number): number =>
   Math.max(1_200, Math.min(80_000, 120_000 / 2 ** zoom));
+
+/** 기상 경보 Point 마커 배율 — **속이 빈 테두리**라 채운 사각과 같은 크기면
+ *  테두리 두께가 0.2 × 1.5px ≈ 0.3px로 서브픽셀이 되어 렌더도 픽킹도 안 됐다
+ *  (2026-08-19 verify:layers 실측: z8에서 pickObjects 0건, 정중앙은 구멍).
+ *  4배(≈6px, 테두리 ≈1.2px)로 올려 테두리가 실제 픽셀을 갖게 한다 —
+ *  DESIGN §2.1의 shape 구분(테두리 vs 채움)을 유지하는 최소 크기다. */
+const ALERT_POINT_SIZE_MUL = 4;
 
 /** 뉴스 크기 = articleCount 로그 스케일 (1→0.75, 10→1.25, 100→1.75 — 실측 1~149) */
 const newsScaleOf = (d: NewsRecord): [number, number, number] => {
@@ -82,15 +95,25 @@ interface AlertFeature {
   properties: { rank: SeverityRank };
 }
 
-/** 기상 경보 지오메트리 3분할 — 폴리곤(면)·트랙(LineString)·점 폴백 (DESIGN §2.1) */
+/** 빗금 한 줄 — PathLayer data (rank는 색, 폴리곤 id는 픽킹 제외용으로 보관하지 않는다:
+ *  빗금은 장식이라 pickable=false다) */
+interface HatchLine {
+  path: Position[];
+  rank: SeverityRank;
+}
+
+/** 기상 경보 지오메트리 3분할 — 폴리곤(면)·트랙(LineString)·점 폴백 (DESIGN §2.1)
+ *  + 폴리곤에서 파생한 빗금선 (재리뷰 Low1) */
 interface WeatherSplit {
   polygons: AlertFeature[];
+  hatch: HatchLine[];
   tracks: WeatherAlertRecord[];
   points: WeatherAlertRecord[];
 }
 
 function splitWeather(records: WeatherAlertRecord[]): WeatherSplit {
   const polygons: AlertFeature[] = [];
+  const hatch: HatchLine[] = [];
   const tracks: WeatherAlertRecord[] = [];
   const points: WeatherAlertRecord[] = [];
   for (const r of records) {
@@ -101,20 +124,25 @@ function splitWeather(records: WeatherAlertRecord[]): WeatherSplit {
         geometry: r.geometry,
         properties: { rank: r.severity.rank },
       });
+      const ringSets: Position[][][] =
+        r.geometry.type === 'Polygon' ? [r.geometry.coordinates] : r.geometry.coordinates;
+      for (const rings of ringSets) {
+        for (const path of hatchPolygon(rings)) hatch.push({ path, rank: r.severity.rank });
+      }
     } else if (r.geometry.type === 'LineString') {
       tracks.push(r);
     } else {
       points.push(r);
     }
   }
-  return { polygons, tracks, points };
+  return { polygons, hatch, tracks, points };
 }
 
 export interface BuildLayersInput {
   quakes: EarthquakeRecord[];
   /** 지역 단위 참조 안정 슬라이스 (리뷰 Med4) — 변한 지역의 레이어만 재생성 */
   flightRegions: readonly FlightRegionSlice[];
-  /** 15분 슬롯 데이터 — latest-source가 asOf 불변 시 배열 참조를 유지 (memo 히트) */
+  /** 60분 사이클 데이터 — latest-source가 asOf 불변 시 배열 참조를 유지 (memo 히트) */
   alerts: WeatherAlertRecord[];
   news: NewsRecord[];
   quakeArrivals: QuakeArrival[];
@@ -168,7 +196,7 @@ export function createLayerBuilder(): LayerBuilder {
     return data;
   };
 
-  /** 지오메트리 3분할 캐시 — records 참조가 같으면(15분 슬롯 무변경) 재분할 금지 */
+  /** 지오메트리 3분할 캐시 — records 참조가 같으면(사이클 무변경) 재분할 금지 */
   let weatherSplitCache: { records: WeatherAlertRecord[]; split: WeatherSplit } | null = null;
   const weatherSplitOf = (records: WeatherAlertRecord[]): WeatherSplit => {
     if (weatherSplitCache && weatherSplitCache.records === records) return weatherSplitCache.split;
@@ -186,7 +214,7 @@ export function createLayerBuilder(): LayerBuilder {
 
     // ── 기상 경보 — 면(폴리곤)이 마커 아래 깔리도록 최하단 배치 (DESIGN §2.1) ──
     if (weatherOn && input.alerts.length > 0) {
-      const { polygons, tracks, points } = weatherSplitOf(input.alerts);
+      const { polygons, hatch, tracks, points } = weatherSplitOf(input.alerts);
 
       if (polygons.length > 0) {
         layers.push(
@@ -214,8 +242,33 @@ export function createLayerBuilder(): LayerBuilder {
         );
       }
 
+      // 빗금 — 폴리곤 면 위, 마커 아래. 장식이라 pickable=false (픽킹은 폴리곤 본체가 받는다).
+      // billboard: globe에서 선 리본이 지표를 벗어나 보이는 문제의 회피책 (아래 트랙 주석 참조).
+      if (hatch.length > 0) {
+        layers.push(
+          memoLayer('alert-hatch', [hatch], () =>
+            new PathLayer<HatchLine>({
+              id: 'alert-hatch',
+              data: hatch,
+              pickable: false,
+              billboard: true,
+              widthUnits: 'pixels',
+              getPath: (d) => d.path as unknown as number[],
+              getColor: (d) => [...ALERT_RANK_RGB[d.rank], ALERT_HATCH_ALPHA],
+              getWidth: 1,
+            }),
+          ),
+        );
+      }
+
       // TC 트랙 — 위치 연속(태풍 중심 경로)만 선 표현 (이산 이벤트 보간 금지와 무관).
-      // 스파이크 이관 7: globe 위 Path 지표 관통 미확정 — 낮은 고도각 육안 확인 대상.
+      //
+      // 스파이크 이관 7 결론 (2026-08-19): globe 위 PathLayer의 기본 압출은 **지표면
+      // 접평면**에서 일어나므로, 낮은 고도각에서 리본이 지구 실루엣 밖으로 떠 보인다.
+      // `billboard: true`로 두면 압출이 스크린 공간(카메라를 향함)에서 일어나 선이 항상
+      // 지표에 붙어 보인다. GreatCircleLayer는 @deck.gl/geo-layers 추가 의존이고
+      // 좌표 세분화(subdivision)는 원인이 chord sag가 아니라 압출면이므로 효과가 없다
+      // — 그래서 billboard가 답이다 (verify:layers의 저pitch 스크린샷으로 확인).
       if (tracks.length > 0) {
         layers.push(
           memoLayer('alert-tracks', [tracks, input.selectedId], () =>
@@ -223,6 +276,7 @@ export function createLayerBuilder(): LayerBuilder {
               id: 'alert-tracks',
               data: tracks,
               pickable: true,
+              billboard: true,
               widthUnits: 'pixels',
               // PathGeometry 선언은 flat number[]지만 런타임은 [[lon,lat],...] 중첩도 수용
               getPath: (d) =>
@@ -231,7 +285,7 @@ export function createLayerBuilder(): LayerBuilder {
                   : []) as unknown as number[],
               getColor: (d) =>
                 d.id === input.selectedId ? SELECTED_RGB : ALERT_RANK_RGB[d.severity.rank],
-              getWidth: 2,
+              getWidth: 2.5,
               updateTriggers: { getColor: input.selectedId },
             }),
           ),
@@ -251,7 +305,7 @@ export function createLayerBuilder(): LayerBuilder {
               getColor: (d) =>
                 d.id === input.selectedId ? SELECTED_RGB : ALERT_RANK_RGB[d.severity.rank],
               getScale: alertPointScaleOf,
-              sizeScale: squareSizeMeters(input.zoomBucket),
+              sizeScale: squareSizeMeters(input.zoomBucket) * ALERT_POINT_SIZE_MUL,
               updateTriggers: { getColor: input.selectedId },
             }),
           ),

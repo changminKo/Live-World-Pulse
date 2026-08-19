@@ -107,7 +107,7 @@ auto=1 JSON 덤프 전문 (logs 포함): `docs/spike/raw/engine-a.json` · `engi
 4. 저줌 뒷반구 데이터의 원반 밖 잔상 — 각거리 컷 필터 검토 (리스크 대장).
 5. 저사양 기기 미측정 — Phase 0 성능 예산 수립 시 실측 필요.
 6. C 폴백 사용 시 전제: TextLayer 소실 해결책 필수.
-7. **[미확정 이월] Arc 지표 관통 여부 (기준 4)** — 스크린샷 판독 한계로 미확정 (실패 관찰은 없음). Phase 0에서 실카메라 저각도 확인.
+7. ~~**[미확정 이월] Arc 지표 관통 여부 (기준 4)**~~ → **해소 (2026-08-19, Phase 1)**. 실데이터 PathLayer(TC 트랙)를 저고도각(pitch 60·z3.4)에서 확인한 결과, 기본 압출은 **지표 접평면**에서 일어나 리본이 지구 실루엣 밖으로 떠 보였다. `billboard: true`(스크린 공간 압출)로 해소 — 좌표 세분화(subdivision)는 원인이 chord sag가 아니라 압출면이라 효과가 없고, GreatCircleLayer는 `@deck.gl/geo-layers` 추가 의존이라 불필요했다. 계약: **globe 위 선 레이어는 `billboard: true` 고정** (web/src/world/deck/layer-factory.ts alert-tracks·alert-hatch). 회귀 게이트 = `npm run verify:layers`의 `tc-track-low-pitch.png` + 트랙 픽킹 단정.
 8. **[미확정 이월] z12 globe→mercator 전환 순간 연속 프레임** — 스냅샷 대조는 무결, 전환 순간 튐은 미관찰. Phase 0에서 육안 확인.
 9. **[미시험 이월] z0 시작 왕복** — 자동 시퀀스가 z1.5까지만 감 (합격 기준 문구는 z0↔z14). Phase 0에서 z0 포함 재확인.
 10. 계측 하네스 재사용 시 개선 2건: minWindowFps가 1초 초과 단일 스톨을 못 봄 (max frame time 지표 추가), probes 화면 밖 projection 센티널의 hit/miss 분류 보강.

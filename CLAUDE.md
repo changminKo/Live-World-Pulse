@@ -1,7 +1,7 @@
 # Live World Pulse
 
 전 세계 실시간 이벤트(지진·기상·항공기·뉴스)를 3D 지구본 + 타임라인으로 탐색하는 데이터 시각화 서비스.
-현재 단계: **Phase 0 완료 → Phase 1 (MVP: 날씨·뉴스 레이어 + Timeline + 상관) 진입 가능** — 공개 URL https://live-world-pulse.pages.dev (Cloudflare Pages), Collector 가동 중 — Collector 가동 중 (lwp-collector.rhckdals123.workers.dev), 공유 계약 = `shared/` (타입·temporalMode·R2 스키마·URL 직렬화 — 기존 필드 변경 금지, 추가는 optional만). 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 7~9, GATE_TOKEN·HEALTHCHECKS_URL 시크릿(사용자). (Phase 전환 시 이 줄을 갱신할 것)
+현재 단계: **Phase 1 진행 중 — 4레이어(지진·항공기·기상·뉴스) 라이브 완료 + TC 트랙·콘 지오메트리. 남은 것: Timeline, 룰 기반 상관, Nearby Events** — 공개 URL https://live-world-pulse.pages.dev, Collector 가동 중 (분→작업 1개 + weather 페이지 1장/슬롯, exceededCpu 0. news-process만 10ms 초과 잔존 — PLAN §8.7) — Collector 가동 중 (lwp-collector.rhckdals123.workers.dev), 공유 계약 = `shared/` (타입·temporalMode·R2 스키마·URL 직렬화 — 기존 필드 변경 금지, 추가는 optional만). 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 8~9(7은 2026-08-19 해소 — globe Path billboard), GATE_TOKEN·HEALTHCHECKS_URL 시크릿(사용자). (Phase 전환 시 이 줄을 갱신할 것)
 마스터 계획: `docs/PLAN.md` (검토 리포트: `docs/review/`). 아래 규칙과 충돌 시 PLAN.md가 우선.
 
 ## 기술 스택 (확정 — 변경 금지)
@@ -24,7 +24,7 @@
 
 아키텍처:
 
-- **WebSocket 도입 금지** (초 단위 소스 없음 — 최선 지진 60초 / 항공기 지역당 3분. SSE는 Phase 2+ 재검토 → PLAN §8.1)
+- **WebSocket 도입 금지** (초 단위 소스 없음 — 수집 지진 20분·항공기 지역당 10분·뉴스 15분·기상 60분, 프론트 지진 직접 폴링 60초. SSE는 Phase 2+ 재검토 → PLAN §8.1·§8.7)
 - **Redis / Timescale / Postgres 도입 금지** ($0 결정 — DB 없음, R2 파일 모델 → PLAN §8.6)
 - **외부 API 브라우저 직접 fetch 금지 — 유일 예외 USGS** (CORS `*`). 나머지는 전부 백엔드 경유
 - **클라이언트 Worker에서 뷰포트별 클러스터링 금지** — LOD 집계는 수집 시 사전계산한 R2 `agg/` 파일 (→ PLAN §8.6)
@@ -46,6 +46,8 @@
 
 - URL 갱신에 **pushState 금지** — `replaceState` + 디바운스만
 - 이산 이벤트(지진·뉴스) **보간 금지** — 위치 연속인 것(항공기·태풍 트랙)만 보간
+- globe 위 **선 레이어(PathLayer)는 `billboard: true` 고정** — 기본 압출은 지표 접평면이라 저고도각에서 리본이 지구 실루엣 밖으로 뜬다 (스파이크 이관 7 해소, 2026-08-19)
+- **비TC 경보의 영역 폴리곤 수집 금지** — GDACS getgeometry는 이벤트당 1콜이라 활성 400여 건이면 400콜 ($0·10ms 예산 밖). 폴리곤/트랙은 **TC 한정**이고 그 밖은 Point다 (백로그 — PLAN §4.2). "폴리곤 구현" 주장을 TC 콘 범위 밖으로 넓히지 말 것
 
 ## 데이터 모델 계약 (PLAN §5)
 
@@ -62,11 +64,13 @@
 - **WebGL 스크린샷 회귀 금지** (GPU별 픽셀 차이) — 대신 DOM 로그 패널 스냅샷 + `pickObjectsInRect` 단정 + 프레임 시간 게이트
 - E2E(Playwright)는 **모킹 fixture만** — 실 API 물리면 100% flaky
 - 단위 테스트 최우선 대상: 어댑터/정규화, kind별 시간 슬라이스, **보간 경계(날짜변경선·극지·heading ±180 wrap)**, 상관 룰, URL 직렬화 라운드트립
-- 프레임워크: Vitest + Playwright
+- 프레임워크: Vitest + Playwright. 패키지별 `npm test` — shared / collector / **web**(2026-08-19 추가: 시간 슬라이스·참조 안정성·상태 전이·빗금 기하)
+- Workers CPU 회귀는 `collector/npm run bench:cpu`(슬롯별 process.cpuUsage) + `npm run bench:news`(단계 분해). **로컬은 회귀 탐지용, 최종 판정은 프로덕션 `wrangler tail`의 cpuTime** (로컬:프로덕션 비율이 작업별로 1.2~5배)
+- **한 슬롯의 작업량은 입력 크기에 비례하지 않게 묶을 것** — GDACS 페이지는 슬롯당 1장, quake norm은 현재+직전 슬롯만. 현재 예외는 news-process(행 수 비례, Free 유예 의존 — PLAN §8.7에 명시)
 
 ## 표기·주장 규칙 (UI·문서 공통)
 
-- "Realtime" 표기 금지 → **"Live Data Integration"**. `● LIVE`는 최신 가용 스냅샷 의미, 6분(항공기 2주기) 무갱신 시 `◐ 지연` 강등
+- "Realtime" 표기 금지 → **"Live Data Integration"**. `● LIVE`는 최신 가용 스냅샷 의미, 항공기 20분(2주기) 무갱신 시 `◐ 지연` 강등 (레이어별 tolerance = shared TEMPORAL_SPEC)
 - 항공기 **"delayed / diverted" 문구 금지** — 계산 가능 지표만 (`traffic density -38% vs 24h baseline`)
 - 근거 없는 **"수만~수십만 이벤트" 주장 금지** — 실측 수치 + 측정 환경·fps 병기
 - 수집 갭 숨기기 금지 — 타임라인 회색 밴드로 정직 표시

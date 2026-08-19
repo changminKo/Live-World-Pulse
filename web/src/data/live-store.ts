@@ -26,8 +26,9 @@ export const STALE_AFTER_MS = 6 * 60_000;
 /** flight 표본 stale 임계 — 지역당 10분 주기 × 2주기 (shared TEMPORAL_SPEC.flight) */
 const FLIGHT_STALE_MS =
   TEMPORAL_SPEC.flight.temporalMode === 'sampled' ? TEMPORAL_SPEC.flight.toleranceMs : 1_200_000;
-/** weather는 30분 수집 슬롯 — 2주기(60분) 무갱신 시 강등 */
-const WEATHER_STALE_MS = 60 * 60_000;
+/** weather는 60분 수집 사이클 — 2주기(120분) 무갱신 시 강등 (collector schedule.ts:
+ *  페이지 1장/슬롯 × 10슬롯 = 사이클 60분. 2026-08-19 프로덕션 CPU 실측 결과) */
+const WEATHER_STALE_MS = 120 * 60_000;
 /** news는 15분 수집 슬롯 — 2주기(30분) 무갱신 시 강등 */
 const NEWS_STALE_MS = 30 * 60_000;
 
@@ -48,6 +49,10 @@ export interface LiveLayerState<R> {
   error: string | null;
   /** 연속 폴 오류 횟수 — 성공(200/304) 시 0. stale 강등과 무관한 진단 카운터 (리뷰 Med1) */
   errorCount: number;
+  /** 마지막 수신 문서가 이 레이어 계약을 위반했다 (재리뷰 Med6).
+   *  304는 "데이터 불변"일 뿐 스키마가 고쳐졌다는 뜻이 아니므로, 이 플래그가 서 있는 동안
+   *  setChecked는 error 상태를 ready로 세탁하지 못한다. 해제는 성공 ingest에서만. */
+  schemaFailed: boolean;
 }
 
 /** 이벤트 로그 prepend·등장 펄스용 — 클라이언트에 처음 도착한 지진 (id, 도착 시각) */
@@ -71,12 +76,13 @@ const MAX_ARRIVALS = 100;
 const MAX_ALERT_ARRIVALS = 50; // 로그 표시용 — 세션 내 보존 (시간 만료 없음)
 
 /** stale 판정 입력 — records 타입과 무관한 공통 메타만 (4레이어 유니언 호출 허용) */
-type LayerMeta = Pick<LiveLayerState<unknown>, 'asOfMs' | 'lastSuccessAtMs' | 'status'>;
+type LayerMeta = Pick<LiveLayerState<unknown>, 'asOfMs' | 'lastSuccessAtMs' | 'status' | 'schemaFailed'>;
 
 /** stale 판정은 시간 규칙만 (CLAUDE.md 2주기 무갱신, 리뷰 Med1) —
  *  기준 시각: quake는 성공 폴 시각(USGS 직접), 나머지는 데이터 asOf(수집기 정지도 잡음).
  *  폴 1회 오류는 강등 사유 아님 — error 메시지·errorCount만 기록. */
 function statusOf(layer: LiveLayerId, s: LayerMeta, nowMs: number): LayerStatus {
+  if (s.schemaFailed) return 'error'; // 계약 위반은 시간이 지나도 stale/ready가 되지 않는다 (Med6)
   if (s.lastSuccessAtMs === null) return s.status; // 성공 이력 없음 — idle/loading/error 유지
   const basis = layer === 'earthquake' ? s.lastSuccessAtMs : s.asOfMs;
   if (basis !== null && nowMs - basis > LAYER_STALE_MS[layer]) return 'stale';
@@ -90,6 +96,7 @@ const emptyLayer = <R>(): LiveLayerState<R> => ({
   status: 'idle',
   error: null,
   errorCount: 0,
+  schemaFailed: false,
 });
 
 interface LiveState {
@@ -108,9 +115,14 @@ interface LiveState {
   setFlights: (snapshot: FlightSnapshot) => void;
   setWeather: (snapshot: LayerSnapshot<WeatherAlertRecord>) => void;
   setNews: (snapshot: LayerSnapshot<NewsRecord>) => void;
+  /** 시간 경과 재슬라이스 — 폴 성공이 아니므로 lastSuccessAtMs·asOf를 건드리지 않는다 (Med5) */
+  resliceWeather: (snapshot: LayerSnapshot<WeatherAlertRecord>) => void;
+  resliceNews: (snapshot: LayerSnapshot<NewsRecord>) => void;
   /** 304 — 데이터 불변, 폴 성공만 기록 */
   setChecked: (layer: LiveLayerId) => void;
   setError: (layer: LiveLayerId, message: string) => void;
+  /** 계약 위반(스키마 불일치) — 다음 304가 덮지 못하는 sticky 오류 (Med6) */
+  setSchemaError: (layer: LiveLayerId, message: string) => void;
   recomputeStale: (nowMs: number) => void;
 }
 
@@ -150,6 +162,7 @@ export const useLiveStore = create<LiveState>()((set) => ({
         status: 'ready',
         error: null,
         errorCount: 0,
+        schemaFailed: false, // 성공 수신 — 계약 위반 해제 (Med6)
       };
       // 첫 로드는 백필이라 '신규 도착' 아님 — 이후 폴에서 못 보던 id만 펄스·로그 강조
       const known = new Set(s.earthquake.records.map((r) => r.id));
@@ -175,6 +188,7 @@ export const useLiveStore = create<LiveState>()((set) => ({
         status: 'ready',
         error: null,
         errorCount: 0,
+        schemaFailed: false,
       };
       return {
         flight: { ...next, status: statusOf('flight', next, now) },
@@ -192,6 +206,7 @@ export const useLiveStore = create<LiveState>()((set) => ({
         status: 'ready',
         error: null,
         errorCount: 0,
+        schemaFailed: false,
       };
       // 첫 로드는 백필 — 이후 폴의 미지 id만 이벤트 로그 '신규 경보'로 기록
       const known = new Set(s.weather.records.map((r) => r.id));
@@ -223,15 +238,48 @@ export const useLiveStore = create<LiveState>()((set) => ({
         status: 'ready',
         error: null,
         errorCount: 0,
+        schemaFailed: false,
       };
       return { news: { ...next, status: statusOf('news', next, now) } };
+    }),
+
+  resliceWeather: (snapshot) =>
+    set((s) => {
+      if (snapshot.records === s.weather.records) return {}; // 집합 불변 — 리렌더 없음
+      return { weather: { ...s.weather, records: snapshot.records } };
+    }),
+
+  resliceNews: (snapshot) =>
+    set((s) => {
+      if (snapshot.records === s.news.records) return {};
+      return { news: { ...s.news, records: snapshot.records } };
     }),
 
   setChecked: (layer) =>
     set((s) => {
       const now = Date.now();
-      const next = { ...s[layer], lastSuccessAtMs: now, error: null, errorCount: 0 };
+      const prev = s[layer];
+      // Med6: 계약 위반이 걸려 있으면 304로 성공 세탁하지 않는다 — 폴 성공 시각만 갱신하고
+      // error 문구·error 상태를 유지한다 (다음 200 성공 ingest에서만 해제).
+      if (prev.schemaFailed) {
+        return { [layer]: { ...prev, lastSuccessAtMs: now, status: 'error' } } as LayerPatch;
+      }
+      const next = { ...prev, lastSuccessAtMs: now, error: null, errorCount: 0 };
       return { [layer]: { ...next, status: statusOf(layer, next, now) } } as LayerPatch;
+    }),
+
+  setSchemaError: (layer, message) =>
+    set((s) => {
+      const prev = s[layer];
+      return {
+        [layer]: {
+          ...prev,
+          error: message,
+          errorCount: prev.errorCount + 1,
+          schemaFailed: true,
+          status: 'error',
+        },
+      } as LayerPatch;
     }),
 
   setError: (layer, message) =>

@@ -103,7 +103,7 @@ export default function LayerPanel() {
       </ul>
       <p className="mt-auto px-[var(--sp-3)] py-[var(--sp-2)] text-[length:var(--text-xs)] leading-relaxed text-[var(--text-lo)]">
         항공기는 6개 지역(서울·도쿄·런던·프랑크푸르트·뉴욕·LA)만 수집 — 빈 지역이 정상입니다.
-        기상·뉴스는 15분 슬롯 수집 — 갱신 지연이 정상입니다.
+        기상은 60분 사이클, 뉴스는 15분 슬롯 수집 — 갱신 지연이 정상입니다.
       </p>
     </aside>
   );

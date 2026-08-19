@@ -1,6 +1,7 @@
 /** Live World Pulse — Collector + 읽기 프록시 엔트리.
  *  cron "* * * * *" 1개. **한 invocation = 작업 1개** (CPU 사다리 rung ① — Free 플랜
- *  하드 10ms/invocation). 분 → 작업 배정은 schedule.ts MINUTE_TASKS가 결정하고,
+ *  하드 10ms/invocation). weather는 페이지 단위로 더 쪼개져 있다 (page ×4 → commit →
+ *  track, 사이클 30분 — 사후 리뷰 High1). 분 → 작업 배정은 schedule.ts MINUTE_TASKS가 결정하고,
  *  latest.json 재조립만 매 분 공통으로 돈다 (byte concat ~0.3ms — r2/latest.ts).
  *  UTC 03:13에 daily capacity scan (§8.6 fail-safe) — 그 분은 수집 작업을 건너뛴다.
  *  halt 플래그 존재 시 수집 전면 스킵.
@@ -10,8 +11,9 @@ import {
   collectNews,
   collectNewsProcess,
   collectQuakes,
-  collectWeather,
   collectWeatherCommit,
+  collectWeatherPages,
+  collectWeatherTracks,
 } from './collect';
 import { taskForMinute } from './schedule';
 import type { MinuteTask } from './schedule';
@@ -32,10 +34,12 @@ async function runTask(env: Env, task: MinuteTask, scheduledMs: number): Promise
       return collectQuakes(env, scheduledMs);
     case 'flight':
       return collectFlightRegion(env, scheduledMs, task.region);
-    case 'weather-fetch':
-      return collectWeather(env, scheduledMs);
+    case 'weather-page':
+      return collectWeatherPages(env, scheduledMs);
     case 'weather-commit':
       return collectWeatherCommit(env, scheduledMs);
+    case 'weather-track':
+      return collectWeatherTracks(env, scheduledMs);
     case 'news-fetch':
       return collectNews(env, scheduledMs);
     case 'news-process':

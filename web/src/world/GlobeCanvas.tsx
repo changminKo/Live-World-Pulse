@@ -53,6 +53,10 @@ function initGlobe(container: HTMLDivElement): () => void {
   map.on('load', () => {
     map.addControl(overlay as unknown as maplibregl.IControl);
     detachLayers = attachLiveLayers(map, overlay);
+    if (import.meta.env.DEV) {
+      // deck 레이어 목록·픽킹 검증용 핸들 (verify:layers) — 프로덕션 번들 제외
+      (window as unknown as Record<string, unknown>).__lwpDeck = overlay;
+    }
   });
 
   // ── 자동 회전 (idle 시) ──

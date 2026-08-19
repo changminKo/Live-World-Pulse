@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'vitest';
 import { MINUTE_TASKS, REGIONS, taskForMinute } from '../src/schedule';
 import { SCAN_HOUR_UTC, SCAN_MINUTE_UTC } from '../src/r2/capacity';
-import { TEMPORAL_SPEC } from '@lwp/shared';
+import { TEMPORAL_SPEC, WEATHER_CYCLE_SEC } from '@lwp/shared';
 
 const at = (minute: number): number => Date.UTC(2026, 7, 19, 12, minute, 0);
 
@@ -20,14 +20,27 @@ describe('MINUTE_TASKS — 분 → 작업 1개', () => {
     }
   });
 
-  test('슬롯 배분 — flight 36 / quake 6 / weather 2+2 / news 4+4 / idle 6', () => {
-    expect(countOf('flight')).toBe(36);
-    expect(countOf('quake')).toBe(6);
-    expect(countOf('weather-fetch')).toBe(2);
-    expect(countOf('weather-commit')).toBe(2);
+  test('슬롯 배분 — flight 36 / quake 3 / weather 10+1+1 / news 4+4 / idle 1', () => {
+    expect(countOf('flight')).toBe(36); // 지역당 10분 유지 (tolerance 20분과 짝)
+    expect(countOf('quake')).toBe(3); // 20분 주기 — all_hour 창 60분이라 유실 없음
+    // 슬롯당 1페이지(프로덕션 실측 2페이지=13ms) × 10슬롯 = 사이클 60분에 최대 10페이지
+    expect(countOf('weather-page')).toBe(10);
+    expect(countOf('weather-commit')).toBe(1);
+    expect(countOf('weather-track')).toBe(1);
     expect(countOf('news-fetch')).toBe(4);
     expect(countOf('news-process')).toBe(4);
-    expect(countOf('idle')).toBe(6);
+    expect(countOf('idle')).toBe(1); // capacity scan 자리(분 13)만
+    // 합이 정확히 60 — 빈 분 없음
+    expect(
+      countOf('flight') +
+        countOf('quake') +
+        countOf('weather-page') +
+        countOf('weather-commit') +
+        countOf('weather-track') +
+        countOf('news-fetch') +
+        countOf('news-process') +
+        countOf('idle'),
+    ).toBe(60);
   });
 
   test('taskForMinute는 UTC 분of시간만 본다 (stateless·결정론)', () => {
@@ -38,21 +51,24 @@ describe('MINUTE_TASKS — 분 → 작업 1개', () => {
     }
   });
 
-  test('weather는 fetch → commit 순서, news도 fetch → process 순서', () => {
+  test('weather는 page ×10 → commit → track 순서, news는 fetch → process 순서', () => {
     const minutesOf = (kind: string): number[] =>
       MINUTE_TASKS.flatMap((t, m) => (t.kind === kind ? [m] : []));
 
-    expect(minutesOf('weather-fetch')).toEqual([6, 36]);
-    expect(minutesOf('weather-commit')).toEqual([9, 39]);
+    expect(minutesOf('weather-page')).toEqual([6, 11, 14, 22, 26, 30, 36, 43, 46, 51]);
+    expect(minutesOf('weather-commit')).toEqual([55]);
+    expect(minutesOf('weather-track')).toEqual([57]);
     expect(minutesOf('news-fetch')).toEqual([2, 17, 32, 47]);
     expect(minutesOf('news-process')).toEqual([4, 19, 34, 49]);
-    // 커밋은 같은 900s norm 슬롯 안에 있어야 raw 되읽기가 성립한다
-    for (const [f, c] of [
-      [6, 9],
-      [36, 39],
-    ]) {
-      expect(Math.floor(f! / 15)).toBe(Math.floor(c! / 15));
-    }
+
+    // 사이클 60분: 모든 페이지 슬롯이 커밋보다 앞, 트랙은 커밋 뒤 (tc-index 의존)
+    const pages = minutesOf('weather-page');
+    const commit = minutesOf('weather-commit')[0]!;
+    const track = minutesOf('weather-track')[0]!;
+    for (const p of pages) expect(p).toBeLessThan(commit);
+    expect(track).toBeGreaterThan(commit);
+    expect(Math.floor(WEATHER_CYCLE_SEC / 60)).toBe(60); // 사이클 = 60분 계약
+
     for (const [f, c] of [
       [2, 4],
       [17, 19],

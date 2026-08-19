@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   RECENT_EXPIRED_WINDOW_MS,
+  applyTcGeometry,
+  buildTcGeometry,
+  tcIdsOf,
   buildTcTrack,
   dedupeGdacs,
   gdacsGeometryUrl,
@@ -8,6 +11,7 @@ import {
   gdacsUtcIso,
   normalizeGdacsList,
 } from '../src/sources/gdacs';
+import type { TcTrackCache } from '../src/sources/gdacs';
 import type { WeatherAlertRecord } from '../src/types';
 
 const NOW = Date.UTC(2026, 7, 19, 12, 2, 0);
@@ -220,6 +224,93 @@ describe('buildTcTrack — 트랙포인트 Polygon → centroid → LineString (
 
   test('features 배열 없음 → 둘 다 null', () => {
     expect(buildTcTrack({ error: 'oops' })).toEqual({ track: null, centroid: null });
+  });
+
+  test('같은 응답의 Poly_Cones를 예보콘 Polygon으로 함께 뽑는다 (추가 콜 0 — 재리뷰 High2)', () => {
+    const cone = {
+      properties: { Class: 'Poly_Cones' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[[139, 20], [141, 20], [141, 22], [139, 22], [139, 20]]],
+      },
+    };
+    const { track, cone: parsed } = buildTcGeometry({
+      features: [trackPoint(0, 138, 26), trackPoint(1, 139, 28), cone],
+    });
+
+    expect(track?.coordinates).toHaveLength(2);
+    expect(parsed?.type).toBe('Polygon');
+    expect(parsed?.coordinates[0]).toHaveLength(5);
+  });
+
+  test('콘 ring의 유효 좌표가 3점 미만이면 cone=null (렌더 불가 폴리곤 금지)', () => {
+    const { cone } = buildTcGeometry({
+      features: [
+        {
+          properties: { Class: 'Poly_Cones' },
+          geometry: { type: 'Polygon', coordinates: [[[139, 20], [0, 0], ['x', 3]]] },
+        },
+      ],
+    });
+    expect(cone).toBeNull();
+  });
+});
+
+describe('applyTcGeometry — 트랙 캐시 합성 + 콘 파생 레코드', () => {
+  function record(): WeatherAlertRecord {
+    const [rec] = (normalizeGdacsList({ features: [feature()] }, NOW) as { records: WeatherAlertRecord[] }).records;
+    return rec!;
+  }
+
+  const cache: TcTrackCache = {
+    eventId: 1001297,
+    episodeId: 55,
+    fetchedAt: '2026-08-19T12:00:00.000Z',
+    track: { type: 'LineString', coordinates: [[138, 26], [139, 28], [140, 30]] },
+    cone: { type: 'Polygon', coordinates: [[[139, 20], [141, 20], [141, 22], [139, 22], [139, 20]]] },
+    centroid: [140, 30],
+  };
+
+  test('본체 지오메트리는 트랙 LineString, centroid는 캐시의 Point_Centroid로 교체', () => {
+    const src = record();
+    const { record: applied } = applyTcGeometry(src, cache);
+
+    expect(applied.geometry).toEqual(cache.track);
+    expect(applied.centroid).toEqual([140, 30]);
+    expect(applied.payload.gdacsGeometryKind).toBe('track');
+    expect(src.geometry.type).toBe('Point'); // 입력 불변
+  });
+
+  test('콘 파생 레코드는 `:cone` sourceId + 같은 시간·등급 (슬라이스 결과가 갈리면 안 된다)', () => {
+    const src = record();
+    const { cone } = applyTcGeometry(src, cache);
+
+    expect(cone?.id).toBe('gdacs:1001297:55:cone');
+    expect(cone?.sourceId).toBe('1001297:55:cone');
+    expect(cone?.geometry).toEqual(cache.cone);
+    expect(cone?.payload.gdacsGeometryKind).toBe('cone');
+    expect(cone?.validFrom).toBe(src.validFrom);
+    expect(cone?.validTo).toBe(src.validTo);
+    expect(cone?.status).toBe(src.status);
+    expect(cone?.severity).toEqual(src.severity);
+  });
+
+  test('tcIdsOf는 파생(:cone) 레코드를 대상으로 잡지 않는다 (무한 파생 금지)', () => {
+    const { cone } = applyTcGeometry(record(), cache);
+    expect(tcIdsOf(cone!)).toBeNull();
+    expect(tcIdsOf(record())).toEqual({ eventId: 1001297, episodeId: 55 });
+  });
+
+  test('track만 있고 cone이 없으면 파생 레코드 없음', () => {
+    const { record: applied, cone } = applyTcGeometry(record(), { ...cache, cone: null });
+    expect(applied.geometry.type).toBe('LineString');
+    expect(cone).toBeNull();
+  });
+
+  test('track이 null이면 Point 유지 (centroid만 보정)', () => {
+    const { record: applied } = applyTcGeometry(record(), { ...cache, track: null });
+    expect(applied.geometry.type).toBe('Point');
+    expect(applied.payload.gdacsGeometryKind).toBeUndefined();
   });
 });
 

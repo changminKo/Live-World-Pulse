@@ -3,7 +3,7 @@
  *     (기대치 누적이 아니라 실측 — lifecycle 삭제 실패를 잡는 유일한 방법)
  *  ② 실측 8GB 초과 시 halt 플래그 PUT → 이후 invocation은 수집 스킵 (자동 과금 차단).
  *     해제는 수동 삭제만 (wrangler r2 object delete lwp-data/manifest/halt.json). */
-import { HALT_KEY, capacityKey, dtOf } from '../slots';
+import { HALT_KEY, WEATHER_STAGING_PREFIX, capacityKey, dtOf } from '../slots';
 import { POLL_RELAX_KEY } from '../proxy';
 import { putIfAbsent } from './norm';
 
@@ -14,7 +14,22 @@ export const SCAN_HOUR_UTC = 3;
 export const SCAN_MINUTE_UTC = 13;
 
 /** 버킷 전체를 덮는 top-level prefix 목록 — 새 top-level 경로 추가 시 여기도 갱신 (§8.6 표와 정렬) */
-const SCAN_PREFIXES = ['raw/', 'norm/', 'agg/', 'pin/', 'manifest/', 'latest.json'] as const;
+const SCAN_PREFIXES = [
+  'raw/',
+  'norm/',
+  'agg/',
+  'pin/',
+  'manifest/',
+  'staging/',
+  'weather/',
+  'latest.json',
+] as const;
+
+/** weather 스테이징 잔재 청소 창 — 사이클(30분)보다 크게 잡아 진행 중 사이클을 건드리지 않는다.
+ *  정상 경로에서는 커밋 슬롯이 자기 사이클 스테이징을 지운다 (collect.ts collectWeatherCommit).
+ *  커밋이 죽어 미완주로 버려진 사이클만 여기서 회수한다 — 전수 LIST를 이미 도는 일 1회 경로라
+ *  추가 비용이 이 슬롯에만 국한된다. */
+const STAGING_SWEEP_AGE_MS = 3 * 3600_000;
 
 /** norm 60s/180s → 900s 슬라이스 형식 전환 기록 — 초기 수 시간분 옛 슬롯은 재작성하지 않는다.
  *
@@ -98,10 +113,39 @@ export async function runDailyCapacityScan(
 
   await bucket.put(capacityKey(dt), JSON.stringify(record));
 
+  const swept = await sweepWeatherStaging(bucket, nowMs);
+  if (swept > 0) console.log(JSON.stringify({ capacityScan: { stagingSwept: swept } }));
+
   // 일 1회 저빈도 경로에 얹는 형식 전환 기록 — 이미 있으면 no-op
   await putIfAbsent(bucket, FORMAT_TRANSITION_KEY, FORMAT_TRANSITION_BODY);
 
   return record;
+}
+
+/** 버려진 weather 스테이징 사이클 삭제 — 키의 cycleStart(epoch ms)로 나이를 판정한다.
+ *  삭제 실패는 무시 (다음 스캔이 재시도) — 스캔 결과를 뒤집지 않는다. */
+async function sweepWeatherStaging(bucket: R2Bucket, nowMs: number): Promise<number> {
+  const cycleRe = /^staging\/weather\/cycle=(\d+)\//;
+  const doomed: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix: WEATHER_STAGING_PREFIX, cursor });
+    for (const obj of page.objects) {
+      const m = cycleRe.exec(obj.key);
+      const cycleStart = m ? Number(m[1]) : NaN;
+      if (Number.isFinite(cycleStart) && nowMs - cycleStart > STAGING_SWEEP_AGE_MS) doomed.push(obj.key);
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  for (const key of doomed) {
+    try {
+      await bucket.delete(key);
+    } catch {
+      // 다음 스캔이 재시도
+    }
+  }
+  return doomed.length;
 }
 
 /** §8.6 quota 방어 ① producer (리뷰 Med3) — daily scan에서 전일 Worker invocation을
