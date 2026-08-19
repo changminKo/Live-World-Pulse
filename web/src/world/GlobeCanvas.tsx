@@ -5,6 +5,7 @@ import { MapboxOverlay } from '@deck.gl/mapbox';
 import { useViewportStore } from '../state/viewport-store';
 import { cancelUrlUpdate, readInitialCamera, scheduleUrlUpdate } from '../state/url-sync';
 import { debounceTrailing } from '../lib/debounce';
+import { attachLiveLayers } from './deck/attach-live-layers';
 
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/dark'; // 키 불요 (PLAN §8.2 실측 확정)
 
@@ -46,10 +47,12 @@ function initGlobe(container: HTMLDivElement): () => void {
     (window as unknown as Record<string, unknown>).__lwpMap = map;
   }
 
-  // deck 레이어는 다음 태스크가 채움 — 빈 배열로 attach 순서만 확정
+  // deck overlay — interleaved: false 고정 (하드 룰), 레이어는 attachLiveLayers가 스토어에서 구동
   const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+  let detachLayers: (() => void) | undefined;
   map.on('load', () => {
     map.addControl(overlay as unknown as maplibregl.IControl);
+    detachLayers = attachLiveLayers(map, overlay);
   });
 
   // ── 자동 회전 (idle 시) ──
@@ -113,6 +116,7 @@ function initGlobe(container: HTMLDivElement): () => void {
     // URL이라 flush하면 오염 (재검증 Med 재현). 유실 폭 = 최대 300ms 이동뿐.
     publishViewport.cancel();
     cancelUrlUpdate();
+    detachLayers?.();
     document.removeEventListener('visibilitychange', onVisibility);
     map.remove(); // overlay는 map.remove()가 컨트롤로 함께 해제
   };
@@ -141,7 +145,7 @@ export default function GlobeCanvas() {
         ref={containerRef}
         className="h-full w-full"
         role="img"
-        aria-label="3D 지구본 — 전 세계 이벤트 지도 (레이어 연결 대기 중)"
+        aria-label="3D 지구본 — 전 세계 이벤트 지도 (동일 데이터는 우측 이벤트 로그에서 텍스트로 제공)"
       />
       {unsupported && (
         <div className="absolute inset-0 flex items-center justify-center">

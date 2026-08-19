@@ -74,3 +74,18 @@ export function cancelUrlUpdate(): void {
   scheduledPathname = undefined;
   firstScheduledAt = undefined;
 }
+
+/** 비카메라 키(l·sel 등) 즉시 반영 — 이산 사용자 액션이라 디바운스 불요.
+ *  replaceState만 사용 (pushState 금지), 카메라 3키 포함 기존 파라미터 전부 보존.
+ *  null = 키 삭제 (기본값 상태는 생략 — 짧은 공유 URL 계약). */
+export function writeUrlKeys(entries: Readonly<Record<string, string | null>>): void {
+  const params = new URLSearchParams(window.location.search);
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
+  const qs = params.toString();
+  const next =
+    (qs ? `${window.location.pathname}?${qs}` : window.location.pathname) + window.location.hash;
+  window.history.replaceState(window.history.state, '', next);
+}

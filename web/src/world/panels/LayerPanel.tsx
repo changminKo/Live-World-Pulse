@@ -1,4 +1,6 @@
 import type { LayerId } from '@lwp/shared';
+import { useLiveStore, type LayerStatus } from '../../data/live-store';
+import { useWorldUiStore } from '../../state/world-ui-store';
 
 /** DESIGN §2.1 — shape가 1차 식별자, hue는 보조 (색상만으로 레이어 구분 금지) */
 interface LayerRow {
@@ -6,18 +8,61 @@ interface LayerRow {
   label: string;
   glyph: string;
   colorVar: string;
+  /** Phase 0 활성 여부 — 기상·뉴스는 Phase 1 */
+  active: boolean;
 }
 
 const LAYER_ROWS: readonly LayerRow[] = [
-  { id: 'earthquake', label: '지진', glyph: '●', colorVar: '--layer-quake' },
-  { id: 'weather', label: '기상 경보', glyph: '▩', colorVar: '--layer-alert' },
-  { id: 'flight', label: '항공기', glyph: '▲', colorVar: '--layer-flight' },
-  { id: 'news', label: '뉴스', glyph: '■', colorVar: '--layer-news' },
+  { id: 'earthquake', label: '지진', glyph: '●', colorVar: '--layer-quake', active: true },
+  { id: 'weather', label: '기상 경보', glyph: '▩', colorVar: '--layer-alert', active: false },
+  { id: 'flight', label: '항공기', glyph: '▲', colorVar: '--layer-flight', active: true },
+  { id: 'news', label: '뉴스', glyph: '■', colorVar: '--layer-news', active: false },
 ];
 
-/** 레이어 패널 — 토글 자리만 (데이터 연결은 다음 태스크).
+const STATUS_COLOR: Record<LayerStatus, string> = {
+  idle: 'var(--text-lo)',
+  loading: 'var(--text-lo)',
+  ready: 'var(--status-live)',
+  stale: 'var(--status-stale)',
+  error: 'var(--layer-alert)',
+};
+
+/** stale 배지 텍스트 — '데이터 지연 N분' 정직 표기 (수집 갭 숨기기 금지) */
+function badgeText(status: LayerStatus, asOfMs: number | null, nowMs: number): string {
+  if (status === 'stale' && asOfMs !== null) {
+    const min = Math.max(1, Math.floor((nowMs - asOfMs) / 60_000));
+    return `지연 ${min}분`;
+  }
+  return status;
+}
+
+interface StatusBadgeProps {
+  layer: 'earthquake' | 'flight';
+  rowId: string;
+}
+
+function StatusBadge({ layer, rowId }: StatusBadgeProps) {
+  const layerState = useLiveStore((s) => s[layer]);
+  const nowMs = useLiveStore((s) => s.tickNowMs);
+  const text = badgeText(layerState.status, layerState.asOfMs, nowMs);
+  return (
+    <span
+      id={rowId}
+      title={layerState.error ?? undefined}
+      className="mono border border-[var(--border)] bg-[var(--bg-2)] px-[var(--sp-1)] text-[length:var(--text-xs)]"
+      style={{ borderRadius: 'var(--radius)', color: STATUS_COLOR[layerState.status] }}
+    >
+      {text}
+    </span>
+  );
+}
+
+/** 레이어 패널 — 지진·항공기 실토글, 기상·뉴스는 Phase 1 disabled.
  *  레이어별 상태 배지: 부분 실패가 정상 상태, 전체 스피너 금지 (PLAN §3). */
 export default function LayerPanel() {
+  const enabled = useWorldUiStore((s) => s.enabled);
+  const toggleLayer = useWorldUiStore((s) => s.toggleLayer);
+
   return (
     <aside
       className="flex flex-col border-r border-[var(--border)] bg-[var(--bg-1)]"
@@ -35,31 +80,45 @@ export default function LayerPanel() {
             <input
               type="checkbox"
               id={`layer-${row.id}`}
-              disabled
+              disabled={!row.active}
+              checked={row.active && enabled.includes(row.id)}
+              onChange={() => toggleLayer(row.id)}
               aria-describedby={`layer-${row.id}-status`}
               className="accent-[var(--status-live)]"
             />
-            <span aria-hidden="true" className="text-[length:var(--text-sm)]" style={{ color: `var(${row.colorVar})` }}>
+            <span
+              aria-hidden="true"
+              className="text-[length:var(--text-sm)]"
+              style={{ color: `var(${row.colorVar})`, opacity: row.active ? 1 : 0.45 }}
+            >
               {row.glyph}
             </span>
             <label
               htmlFor={`layer-${row.id}`}
-              className="flex-1 text-[length:var(--text-sm)] text-[var(--text-hi)]"
+              className="flex-1 text-[length:var(--text-sm)]"
+              style={{ color: row.active ? 'var(--text-hi)' : 'var(--text-lo)' }}
             >
               {row.label}
             </label>
-            <span
-              id={`layer-${row.id}-status`}
-              className="mono border border-[var(--border)] bg-[var(--bg-2)] px-[var(--sp-1)] text-[length:var(--text-xs)] text-[var(--text-lo)]"
-              style={{ borderRadius: 'var(--radius)' }}
-            >
-              idle
-            </span>
+            {row.active ? (
+              <StatusBadge
+                layer={row.id === 'earthquake' ? 'earthquake' : 'flight'}
+                rowId={`layer-${row.id}-status`}
+              />
+            ) : (
+              <span
+                id={`layer-${row.id}-status`}
+                className="mono border border-[var(--border)] bg-[var(--bg-2)] px-[var(--sp-1)] text-[length:var(--text-xs)] text-[var(--text-lo)]"
+                style={{ borderRadius: 'var(--radius)' }}
+              >
+                Phase 1
+              </span>
+            )}
           </li>
         ))}
       </ul>
       <p className="mt-auto px-[var(--sp-3)] py-[var(--sp-2)] text-[length:var(--text-xs)] leading-relaxed text-[var(--text-lo)]">
-        데이터 레이어는 다음 단계에서 연결됩니다.
+        항공기는 6개 지역(서울·도쿄·런던·프랑크푸르트·뉴욕·LA)만 수집 — 빈 지역이 정상입니다.
       </p>
     </aside>
   );

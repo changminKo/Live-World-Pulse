@@ -2,6 +2,8 @@
  *  의존성 0 순수 타입+함수. npm workspace 아님 — 소비자가 tsconfig paths로 상대 참조. */
 export * from './types';
 export * from './temporal';
+export * from './coords';
+export * from './normalize-usgs';
 export * from './r2-keys';
 export * from './r2-contract';
 export * from './url-state';

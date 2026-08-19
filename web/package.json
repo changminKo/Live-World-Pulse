@@ -12,12 +12,14 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "verify:globe": "node scripts/verify-globe.mjs"
+    "verify:globe": "node scripts/verify-globe.mjs",
+    "verify:layers": "node scripts/verify-layers.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "^9.3.10",
     "@deck.gl/layers": "^9.3.10",
     "@deck.gl/mapbox": "^9.3.10",
+    "@deck.gl/mesh-layers": "^9.3.10",
     "maplibre-gl": "~5.24.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
