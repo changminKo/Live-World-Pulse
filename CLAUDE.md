@@ -1,7 +1,7 @@
 # Live World Pulse
 
 전 세계 실시간 이벤트(지진·기상·항공기·뉴스)를 3D 지구본 + 타임라인으로 탐색하는 데이터 시각화 서비스.
-현재 단계: **Phase 0a 완료 (Collector 가동 중) → Phase 0b (데이터 모델 확정) 진입 가능** — Collector = lwp-collector.workers.dev (1분 cron, R2 lwp-data 수집 중, 2026-08-19 가동 시작). 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 7~9, GATE_TOKEN·HEALTHCHECKS_URL 시크릿(사용자). (Phase 전환 시 이 줄을 갱신할 것)
+현재 단계: **Phase 0b 완료 (shared/ 계약 잠금) → Phase 0 (Globe 프로토타입) 진입 가능** — Collector 가동 중 (lwp-collector.workers.dev), 공유 계약 = `shared/` (타입·temporalMode·R2 스키마·URL 직렬화 — 기존 필드 변경 금지, 추가는 optional만). 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 7~9, GATE_TOKEN·HEALTHCHECKS_URL 시크릿(사용자). (Phase 전환 시 이 줄을 갱신할 것)
 마스터 계획: `docs/PLAN.md` (검토 리포트: `docs/review/`). 아래 규칙과 충돌 시 PLAN.md가 우선.
 
 ## 기술 스택 (확정 — 변경 금지)

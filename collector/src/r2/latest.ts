@@ -3,15 +3,11 @@
  *  나머지 레이어는 기존 내용 보존 (PLAN §8.6 — stateless invocation의 유일한 보존 경로).
  *  신규 객체도 create-if-absent 조건부 PUT — 최초 실행 병렬 last-write-wins 방지. */
 import { LATEST_KEY } from '../slots';
+import type { LatestDoc } from '@lwp/shared';
 import type { EarthquakeRecord, FlightRecord, Iso } from '../types';
 
-export interface LatestDoc {
-  updatedAt: Iso;
-  layers: {
-    earthquake?: { asOf: Iso; records: EarthquakeRecord[] };
-    flight?: { regions: Record<string, { asOf: Iso; records: FlightRecord[] }> };
-  };
-}
+/** 스키마는 shared r2-contract로 승격 (프론트 LIVE 폴링과 공유) — 기존 임포트 경로 유지용 재수출 */
+export type { LatestDoc } from '@lwp/shared';
 
 const EMPTY: LatestDoc = { updatedAt: new Date(0).toISOString(), layers: {} };
 const MAX_CAS_ATTEMPTS = 4;

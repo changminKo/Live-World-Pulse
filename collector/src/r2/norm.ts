@@ -16,6 +16,7 @@ import { gunzipToText, gzipText } from '../gzip';
 import { contentHash } from '../hash';
 import { sleep } from '../http';
 import { manifestEntryKey, manifestSlotPrefix, normKey, normPointerKey, normSlotPrefix, dtOf } from '../slots';
+import type { SlotFileBody as SharedSlotFileBody } from '@lwp/shared';
 import type { LayerId, NormRecord } from '../types';
 
 interface SlotPointer {
@@ -56,14 +57,9 @@ export interface NormSlotOutcome {
   records: number;
 }
 
-interface SlotFileBody {
-  layer: LayerId;
-  slot: number;
-  slotDurationSec: number;
-  generation: number;
-  writtenAt: string;
-  records: NormRecord[];
-}
+/** 파일 스키마는 shared r2-contract로 승격 — 0a 부분집합으로 좁혀 사용.
+ *  주의: JSON 필드 순서는 아래 객체 리터럴이 결정 (§8.7 내용 해시 전제 — 순서 변경 금지). */
+type SlotFileBody = SharedSlotFileBody<NormRecord>;
 
 interface ManifestEntryBody {
   layer: LayerId;
