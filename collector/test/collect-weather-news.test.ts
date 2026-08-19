@@ -32,8 +32,8 @@ afterEach(() => {
 
 // ── GDACS fixtures ──────────────────────────────────────────────
 
-const T_WEATHER = Date.UTC(2026, 7, 19, 12, 2, 0); // m%15==2 (fetch 단계)
-const T_COMMIT = Date.UTC(2026, 7, 19, 12, 5, 0); // m%15==5 (norm 커밋 단계, 같은 900s 슬롯)
+const T_WEATHER = Date.UTC(2026, 7, 19, 12, 6, 0); // schedule.ts weather-fetch 슬롯
+const T_COMMIT = Date.UTC(2026, 7, 19, 12, 9, 0); // weather-commit 슬롯 (같은 900s 슬롯)
 
 function gdacsFeature(over: Record<string, unknown> = {}) {
   return {
@@ -82,8 +82,8 @@ function stubGdacsAll(feats: { green?: unknown[]; orange?: unknown[]; red?: unkn
   return calls;
 }
 
-describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, norm은 커밋 단계로 분리', () => {
-  test('전 레벨 성공 → raw 페이지 적재 + latest.weather 파트 교체, norm은 쓰지 않는다', async () => {
+describe('collectWeather (fetch 슬롯) — 페이징 + raw 적재만 (정규화·latest는 커밋 슬롯)', () => {
+  test('전 레벨 성공 → raw 페이지 + 완주 마커. norm·latest는 쓰지 않는다', async () => {
     const green = [gdacsFeature()];
     const orange = [
       gdacsFeature({ eventid: 501, alertlevel: 'Orange', eventtype: 'TC', iscurrent: 'false', todate: '2026-08-19T00:00:00' }),
@@ -94,19 +94,18 @@ describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, nor
     const summary = await collectWeather(makeEnv(fake), T_WEATHER);
 
     expect(summary.ok).toBe(true);
-    expect(summary.detail.records).toBe(2);
-    // norm 커밋 없음 — m%15==5의 collectWeatherCommit 몫
+    expect(summary.detail.pages).toBe(3);
+    // CPU 사다리 rung ①: fetch 슬롯은 정규화하지 않는다 — norm도 latest도 커밋 슬롯 몫
     expect(fake.keysWithPrefix('norm/weather/')).toHaveLength(0);
+    expect(fake.store.has(latestLayerKey('weather'))).toBe(false);
     // 레벨별 raw p1 3개 + 체인 완주 마커 3개 (재리뷰 High2)
     const rawKeys = fake.keysWithPrefix('raw/gdacs/');
     expect(rawKeys).toHaveLength(6);
     expect(rawKeys.some((k) => k.includes('list_green_p1'))).toBe(true);
     expect(rawKeys.filter((k) => k.includes('_complete'))).toHaveLength(3);
-    const latest = fake.jsonOf<SnapshotPart<WeatherAlertRecord>>(latestLayerKey('weather'))!;
-    expect(latest.records).toHaveLength(2);
   });
 
-  test('100건 초과 레벨은 다음 페이지 fetch — 두 페이지 union (High2 페이징)', async () => {
+  test('100건 가득 + current 있음 → 다음 페이지 fetch (High2 페이징)', async () => {
     const fullPage = Array.from({ length: GDACS_PAGE_SIZE }, (_, i) => gdacsFeature({ eventid: 1000 + i }));
     const secondPage = [gdacsFeature({ eventid: 2000 })];
     const calls: string[] = [];
@@ -126,12 +125,37 @@ describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, nor
     const summary = await collectWeather(makeEnv(fake), T_WEATHER);
 
     expect(summary.ok).toBe(true);
-    expect(summary.detail.records).toBe(GDACS_PAGE_SIZE + 1); // 101건 — 단일 콜 100 cap을 넘겼다
     expect(calls.filter((u) => u.includes('alertlevel=Green')).length).toBe(2);
     expect(calls.filter((u) => u.includes('alertlevel=Orange')).length).toBe(1);
     expect(fake.keysWithPrefix('raw/gdacs/').filter((k) => /list_green_p\d/.test(k)).length).toBe(2);
     expect(fake.keysWithPrefix('raw/gdacs/').some((k) => k.includes('list_green_complete'))).toBe(true);
     expect(summary.detail.capped).toBeUndefined();
+  });
+
+  test('가득 찼지만 current가 0인 페이지에서 조기 종료 — 히스토리 페이징 금지 (CPU 사다리)', async () => {
+    const currentPage = Array.from({ length: GDACS_PAGE_SIZE }, (_, i) => gdacsFeature({ eventid: 8000 + i }));
+    const historyPage = Array.from({ length: GDACS_PAGE_SIZE }, (_, i) =>
+      gdacsFeature({ eventid: 9000 + i, iscurrent: 'false', todate: '2026-08-19T00:00:00' }),
+    );
+    const calls: string[] = [];
+    stubFetch([
+      [
+        (u) => u.includes('geteventlist/SEARCH'),
+        (u) => {
+          calls.push(u);
+          if (/alertlevel=Green&pagenumber=1&/.test(u)) return new Response(JSON.stringify({ features: currentPage }));
+          if (/alertlevel=Green&pagenumber=2&/.test(u)) return new Response(JSON.stringify({ features: historyPage }));
+          return new Response(JSON.stringify({ features: [] }));
+        },
+      ],
+    ]);
+    const fake = new FakeR2();
+
+    const summary = await collectWeather(makeEnv(fake), T_WEATHER);
+
+    // p2가 전부 히스토리라 p3는 요청하지 않는다 (캡 2라 어차피 멈추지만 신호는 current)
+    expect(calls.filter((u) => u.includes('alertlevel=Green')).length).toBe(2);
+    expect(summary.detail.capped).toBeUndefined(); // current 0 종료는 잘림이 아니다
   });
 
   test('페이지 캡 도달 시 capped 신호 — detail + status 원장(partial/page_capped)', async () => {
@@ -141,7 +165,7 @@ describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, nor
         (u) => u.includes('geteventlist/SEARCH'),
         (u) =>
           /alertlevel=Green/.test(u)
-            ? new Response(JSON.stringify({ features: fullPage })) // 항상 가득 — 캡까지 간다
+            ? new Response(JSON.stringify({ features: fullPage })) // 항상 가득 + 전부 current — 캡까지 간다
             : new Response(JSON.stringify({ features: [] })),
       ],
     ]);
@@ -160,7 +184,7 @@ describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, nor
     expect(status.detail.capped).toEqual(['Green']);
   });
 
-  test('한 레벨 429 실패 → partial: latest 보존 + 429 재시도 없음 (콜 1회)', async () => {
+  test('한 레벨 429 실패 → partial + 429 재시도 없음 (콜 1회)', async () => {
     const calls: string[] = [];
     stubFetch([
       [
@@ -173,16 +197,13 @@ describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, nor
       ],
     ]);
     const fake = new FakeR2();
-    const preserved: SnapshotPart<never> = { asOf: '2026-08-19T11:47:00.000Z', records: [] };
-    fake.seed(latestLayerKey('weather'), JSON.stringify(preserved), undefined, { asOf: preserved.asOf });
 
     const summary = await collectWeather(makeEnv(fake), T_WEATHER);
 
     expect(summary.ok).toBe(false);
     // 429는 재시도 금지 — Orange 콜은 정확히 1회 (리뷰 Low2: 실제 호출 횟수 검증)
     expect(calls.filter((u) => u.includes('alertlevel=Orange')).length).toBe(1);
-    // latest는 교체하지 않는다 — 실패 레벨의 경보 소실 방지
-    expect(fake.jsonOf<SnapshotPart<never>>(latestLayerKey('weather'))!.asOf).toBe('2026-08-19T11:47:00.000Z');
+    expect(fake.keysWithPrefix('raw/gdacs/').some((k) => k.includes('list_orange_complete'))).toBe(false);
     const statusKeys = fake.keysWithPrefix('manifest/status/weather/');
     expect(statusKeys).toHaveLength(1);
     expect(fake.jsonOf<{ outcome: string }>(statusKeys[0]!)!.outcome).toBe('partial');
@@ -202,40 +223,32 @@ describe('collectWeather (fetch 단계) — 페이징 + raw 적재 + latest, nor
   });
 });
 
-describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → norm 커밋 → latest 패치', () => {
-  const ring = (lon: number, lat: number) => [
-    [lon - 0.1, lat - 0.1],
-    [lon + 0.1, lat - 0.1],
-    [lon + 0.1, lat + 0.1],
-    [lon - 0.1, lat + 0.1],
-    [lon - 0.1, lat - 0.1],
-  ];
-  const geom = {
-    features: [
-      { properties: { Class: 'Point_Polygon_Point_0' }, geometry: { type: 'Polygon', coordinates: [ring(130, 20)] } },
-      { properties: { Class: 'Point_Polygon_Point_1' }, geometry: { type: 'Polygon', coordinates: [ring(132, 24)] } },
-      { properties: { Class: 'Point_Centroid' }, geometry: { type: 'Point', coordinates: [132, 24] } },
-    ],
-  };
-
-  test('fetch 단계의 raw 페이지를 되읽어 norm 커밋 + 활성 TC 트랙 LineString + latest 패치', async () => {
+describe('collectWeatherCommit (커밋 슬롯) — raw 되읽기 → 정규화 → norm 커밋 → latest', () => {
+  test('fetch 슬롯의 raw 페이지를 되읽어 norm 커밋 + latest 교체. TC 트랙은 강등(Point 유지)', async () => {
     const tc = gdacsFeature({ eventid: 900, episodeid: 3, eventtype: 'TC', alertlevel: 'Red' });
+    const calls: string[] = [];
     stubFetch([
       [
         (u) => u.includes('geteventlist/SEARCH'),
-        (u) =>
-          new Response(JSON.stringify({ features: /alertlevel=Red/.test(u) ? [tc] : [gdacsFeature()] })),
+        (u) => {
+          calls.push(u);
+          return new Response(JSON.stringify({ features: /alertlevel=Red/.test(u) ? [tc] : [gdacsFeature()] }));
+        },
       ],
-      [(u) => u.includes('getgeometry'), () => new Response(JSON.stringify(geom))],
     ]);
     const fake = new FakeR2();
     const env = makeEnv(fake);
 
-    await collectWeather(env, T_WEATHER); // m2: raw + latest(Point)
-    const summary = await collectWeatherCommit(env, T_COMMIT); // m5: norm + 트랙
+    await collectWeather(env, T_WEATHER); // raw만
+    const summary = await collectWeatherCommit(env, T_COMMIT); // 정규화 + norm + latest
 
     expect(summary.ok).toBe(true);
     expect(summary.detail.recovered).toBe(false);
+    expect(summary.detail.tracks).toBe('degraded');
+    expect(summary.detail.activeTcs).toBe(1);
+    // rung ② 강등: getgeometry는 호출하지 않는다
+    expect(calls.some((u) => u.includes('getgeometry'))).toBe(false);
+
     // norm 슬롯 커밋 — fetch 분과 같은 900s 슬롯
     const slot = slotStartSec(T_WEATHER, NORM_SLOT_SEC);
     expect(slot).toBe(slotStartSec(T_COMMIT, NORM_SLOT_SEC));
@@ -246,14 +259,34 @@ describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → 
       records: Array<{ id: string; geometry: { type: string } }>;
     };
     const tcRec = file.records.find((r) => r.id === 'gdacs:900:3')!;
-    expect(tcRec.geometry.type).toBe('LineString');
-    // latest도 트랙 패치 반영 (전 레벨 raw가 있으므로 교체)
+    expect(tcRec.geometry.type).toBe('Point'); // 트랙 강등 — 경보 자체는 살아 있다
+
+    // latest는 커밋 슬롯이 교체한다
     const latest = fake.jsonOf<SnapshotPart<WeatherAlertRecord>>(latestLayerKey('weather'))!;
-    const latestTc = latest.records.find((r) => r.id === 'gdacs:900:3')!;
-    expect(latestTc.geometry.type).toBe('LineString');
-    expect(latestTc.centroid).toEqual([132, 24]);
-    // geom raw 적재
-    expect(fake.keysWithPrefix('raw/gdacs/').some((k) => k.includes('geom_900_3'))).toBe(true);
+    expect(latest.records.map((r) => r.id).sort()).toEqual(['gdacs:500:1', 'gdacs:900:3']);
+    expect(latest.asOf).toBe(new Date(T_COMMIT).toISOString());
+
+    // TC 강등이 원장에 남는다 (숨기지 않는다)
+    const degraded = fake
+      .keysWithPrefix('manifest/status/weather/')
+      .map((k) => fake.jsonOf<{ outcome: string; detail: { reason?: string } }>(k)!)
+      .find((st) => st.outcome === 'degraded');
+    expect(degraded?.detail.reason).toBe('tc_track_disabled');
+  });
+
+  test('미해제(iscurrent) 경보는 validTo=null — todate는 payload.observedUntil 보존', async () => {
+    stubGdacsAll({ green: [gdacsFeature()], orange: [], red: [] });
+    const fake = new FakeR2();
+    const env = makeEnv(fake);
+
+    await collectWeather(env, T_WEATHER);
+    await collectWeatherCommit(env, T_COMMIT);
+
+    const latest = fake.jsonOf<SnapshotPart<WeatherAlertRecord>>(latestLayerKey('weather'))!;
+    const rec = latest.records.find((r) => r.id === 'gdacs:500:1')!;
+    expect(rec.status).toBe('active');
+    expect(rec.validTo).toBeNull(); // 미해제 — sliceInterval에서 활성으로 남는다
+    expect(rec.payload.observedUntil).toBe('2026-08-20T00:00:00.000Z');
   });
 
   test('raw가 없으면(fetch 분 사망) 인라인 재fetch로 복구 — recovered 표시', async () => {
@@ -266,6 +299,7 @@ describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → 
     expect(summary.detail.recovered).toBe(true);
     const slot = slotStartSec(T_COMMIT, NORM_SLOT_SEC);
     expect(fake.store.has(normKey('weather', slot, 0))).toBe(true);
+    expect(fake.store.has(latestLayerKey('weather'))).toBe(true);
   });
 
   test('중간 페이지 실패 슬롯(마커 없음) → latest 미갱신 + partial 원장 (재리뷰 High2)', async () => {
@@ -301,8 +335,7 @@ describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → 
     const statuses = fake
       .keysWithPrefix('manifest/status/weather/')
       .map((k) => fake.jsonOf<{ outcome: string; detail: { phase?: string; reason?: string; incomplete?: string[] } }>(k)!);
-    const commitPartial = statuses.find((s) => s.detail.phase === 'commit');
-    expect(commitPartial?.outcome).toBe('partial');
+    const commitPartial = statuses.find((st) => st.detail.phase === 'commit' && st.outcome === 'partial');
     expect(commitPartial?.detail.reason).toBe('incomplete_levels');
     expect(commitPartial?.detail.incomplete).toEqual(['Green']);
   });
@@ -315,7 +348,6 @@ describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → 
     stubGdacsAll({ green: [gdacsFeature()], orange: [], red: [] });
     await collectWeather(env, T_WEATHER);
     expect(fake.keysWithPrefix('raw/gdacs/').some((k) => k.includes('list_green_complete'))).toBe(true);
-    const latestAfterFirst = fake.jsonOf<SnapshotPart<WeatherAlertRecord>>(latestLayerKey('weather'))!;
 
     // 2차 시도 (cron 재전달, 같은 scheduledMs) — green p1 가득 → p2 429 (체인 중단).
     // 구버전이면 1차 마커(pages=1)가 남고 p1도 존재해 페이지 수까지 일치 — complete 오인.
@@ -340,10 +372,8 @@ describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → 
     expect(summary.ok).toBe(true);
     expect(summary.detail.latestSkipped).toBe(true);
     expect(summary.detail.incomplete).toEqual(['Green']);
-    // latest는 1차 시도의 스냅샷 그대로 (혼합 세대 데이터로 덮지 않는다)
-    expect(fake.jsonOf<SnapshotPart<WeatherAlertRecord>>(latestLayerKey('weather'))!.asOf).toBe(
-      latestAfterFirst.asOf,
-    );
+    // latest는 아예 기록되지 않는다 (혼합 세대 데이터로 덮지 않는다)
+    expect(fake.store.has(latestLayerKey('weather'))).toBe(false);
   });
 
   test('마커 페이지 수 ≠ 실제 raw 페이지 → complete 불인정 (Med2 — 세대·페이지 대조)', async () => {
@@ -374,17 +404,14 @@ describe('collectWeatherCommit (커밋 단계) — raw 되읽기 → 트랙 → 
     expect(summary.ok).toBe(true);
     expect(summary.detail.latestSkipped).toBe(true);
     expect(summary.detail.incomplete).toEqual(['Green']);
-    // latest는 fetch 단계 스냅샷 유지 — 커밋의 트랙 패치 교체가 일어나지 않았다
-    expect(fake.jsonOf<SnapshotPart<WeatherAlertRecord>>(latestLayerKey('weather'))!.asOf).toBe(
-      new Date(T_WEATHER).toISOString(),
-    );
+    expect(fake.store.has(latestLayerKey('weather'))).toBe(false);
   });
 });
 
 // ── GDELT fixtures ──────────────────────────────────────────────
 
-const T_NEWS = Date.UTC(2026, 7, 19, 6, 24, 0); // m%15==9 (fetch 단계)
-const T_PROCESS = Date.UTC(2026, 7, 19, 6, 26, 0); // m%15==11 (처리 단계)
+const T_NEWS = Date.UTC(2026, 7, 19, 6, 17, 0); // schedule.ts news-fetch 슬롯
+const T_PROCESS = Date.UTC(2026, 7, 19, 6, 19, 0); // news-process 슬롯
 const FILE_MS = Date.UTC(2026, 7, 19, 6, 15, 0);
 const EXPORT_URL = 'http://data.gdeltproject.org/gdeltv2/20260819061500.export.CSV.zip';
 const LASTUPDATE_BODY = `76796 md5 ${EXPORT_URL}\n81910 md5 http://data.gdeltproject.org/gdeltv2/20260819061500.mentions.CSV.zip`;

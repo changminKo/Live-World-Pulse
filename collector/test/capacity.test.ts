@@ -13,14 +13,14 @@ import { FakeR2, asBucket } from './fake-r2';
 import type { CapacityRecord } from '../src/r2/capacity';
 
 describe('daily capacity scan (H4 — §8.6 fail-safe)', () => {
-  const T = Date.UTC(2026, 7, 19, 3, 7, 0);
+  const T = Date.UTC(2026, 7, 19, 3, 13, 0);
 
-  test('스캔 슬롯 = UTC 03:07 정확히 1분', () => {
-    expect(isScanSlot(Date.UTC(2026, 7, 19, 3, 7, 0))).toBe(true);
-    expect(isScanSlot(Date.UTC(2026, 7, 19, 3, 7, 59))).toBe(true);
-    expect(isScanSlot(Date.UTC(2026, 7, 19, 3, 8, 0))).toBe(false);
-    expect(isScanSlot(Date.UTC(2026, 7, 19, 4, 7, 0))).toBe(false);
-    expect(isScanSlot(Date.UTC(2026, 7, 19, 0, 7, 0))).toBe(false);
+  test('스캔 슬롯 = UTC 03:13 정확히 1분 (schedule.ts idle 분)', () => {
+    expect(isScanSlot(Date.UTC(2026, 7, 19, 3, 13, 0))).toBe(true);
+    expect(isScanSlot(Date.UTC(2026, 7, 19, 3, 13, 59))).toBe(true);
+    expect(isScanSlot(Date.UTC(2026, 7, 19, 3, 14, 0))).toBe(false);
+    expect(isScanSlot(Date.UTC(2026, 7, 19, 4, 13, 0))).toBe(false);
+    expect(isScanSlot(Date.UTC(2026, 7, 19, 0, 13, 0))).toBe(false);
   });
 
   test('prefix별 paginated LIST 합산 → capacity 기록, 한도 내면 halt 없음', async () => {
@@ -173,28 +173,25 @@ describe('스캔 실패 무오탐 (재리뷰 Med2/Low — index.scheduled)', () 
     vi.unstubAllGlobals();
   });
 
-  test('scan 예외 → halt 미생성 + 수집은 계속 + healthchecks는 실패 판정', async () => {
+  test('scan 예외 → halt 미생성 + 정직한 실패 핑 (스캔 분은 수집 미실행)', async () => {
     const worker = (await import('../src/index')).default;
-    const { regionsForMinute } = await import('../src/schedule');
-    const { pointUrl } = await import('../src/sources/adsblol');
-    const { USGS_ALL_HOUR_URL } = await import('../src/sources/usgs');
+    const { MINUTE_TASKS } = await import('../src/schedule');
+    const { SCAN_HOUR_UTC, SCAN_MINUTE_UTC } = await import('../src/r2/capacity');
 
-    const T = Date.UTC(2026, 7, 19, 3, 7, 0); // 스캔 슬롯
+    const T = Date.UTC(2026, 7, 19, SCAN_HOUR_UTC, SCAN_MINUTE_UTC, 0); // 스캔 슬롯
+    // CPU 사다리 rung ①: 스캔 분은 idle 분이라 수집 작업이 배정돼 있지 않다
+    expect(MINUTE_TASKS[SCAN_MINUTE_UTC]?.kind).toBe('idle');
+
     const fake = new FakeR2();
     // LIST 자체가 죽는 스캔 실패 재현
     fake.list = async () => {
       throw new Error('list unavailable');
     };
-    const [r1, r2] = regionsForMinute(T);
     const hcPings: string[] = [];
 
     vi.useFakeTimers();
     vi.stubGlobal('fetch', async (input: unknown) => {
       const url = String(input);
-      if (url === USGS_ALL_HOUR_URL) return new Response(JSON.stringify({ features: [] }), { status: 200 });
-      if (url === pointUrl(r1) || url === pointUrl(r2)) {
-        return new Response(JSON.stringify({ ac: [] }), { status: 200 });
-      }
       if (url.startsWith('https://hc.example/ping')) {
         hcPings.push(url);
         return new Response('ok', { status: 200 });
@@ -218,9 +215,6 @@ describe('스캔 실패 무오탐 (재리뷰 Med2/Low — index.scheduled)', () 
 
     // 스캔 실패는 halt 오탐을 만들지 않는다
     expect(fake.store.has(HALT_KEY)).toBe(false);
-    // 수집은 계속됐다 (양 레이어 empty status 원장이 남는다)
-    expect(fake.keysWithPrefix('manifest/status/earthquake/')).toHaveLength(1);
-    expect(fake.keysWithPrefix('manifest/status/flight/')).toHaveLength(1);
     // 그러나 성공으로 위장하지 않는다 — 데드맨 핑은 /fail
     expect(hcPings).toHaveLength(1);
     expect(hcPings[0]).toBe('https://hc.example/ping/fail');

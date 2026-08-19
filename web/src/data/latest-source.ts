@@ -1,8 +1,12 @@
 import {
   TEMPORAL_SPEC,
+  sliceInterval,
   sliceObservation,
+  sliceOccurrence,
   type FlightRecord,
   type LatestDoc,
+  type NewsRecord,
+  type WeatherAlertRecord,
 } from '@lwp/shared';
 
 /** Worker 프록시 latest.json — LIVE 폴링 1req/폴 계약 (PLAN §8.6).
@@ -26,14 +30,14 @@ export interface FlightRegionSlice {
 export interface FlightSnapshot {
   /** 전 지역 평탄화 (지역 순서 고정) — 상세 패널·검증 스크립트 소비 */
   records: FlightRecord[];
-  /** 지역 asOf 최댓값 epoch ms — 커버리지 갭(지역별 3분 주기)에서 가장 신선한 시점 */
+  /** 지역 asOf 최댓값 epoch ms — 커버리지 갭(지역별 10분 주기)에서 가장 신선한 시점 */
   asOfMs: number | null;
   /** 지역별 참조 안정 슬라이스 — deck 레이어 memo 키 */
   regions: FlightRegionSlice[];
 }
 
 const flightTolerance =
-  TEMPORAL_SPEC.flight.temporalMode === 'sampled' ? TEMPORAL_SPEC.flight.toleranceMs : 360_000;
+  TEMPORAL_SPEC.flight.temporalMode === 'sampled' ? TEMPORAL_SPEC.flight.toleranceMs : 1_200_000;
 
 interface RegionRaw {
   asOfIso: string;
@@ -118,4 +122,80 @@ export function createFlightSource(): FlightIngest {
     prevSnapshot = { records: flat, asOfMs, regions: sliceList };
     return prevSnapshot;
   };
+}
+
+/* ── weather·news — latest.json 단일 asOf 레이어 소비 (Phase 1) ── */
+
+/** 단일 asOf 레이어 스냅샷 — weather(Interval)·news(Occurrence) 공용 */
+export interface LayerSnapshot<R> {
+  records: R[];
+  asOfMs: number | null;
+}
+
+export type LayerIngest<R> = (doc: unknown, nowMs: number) => LayerSnapshot<R> | null;
+
+const NEWS_WINDOW_MS =
+  TEMPORAL_SPEC.news.temporalMode === 'instant' ? TEMPORAL_SPEC.news.windowMs : 7_200_000;
+
+interface SimpleLayerRaw<R> {
+  asOfIso: string;
+  asOfMs: number | null;
+  records: R[];
+}
+
+/** 참조 안정 단일 레이어 병합기 — asOf 동일하면 직전 스냅샷(배열 참조) 그대로 반환.
+ *  weather(30분)·news(15분) 슬롯이라 60s 폴 대부분에서 무변경 — 레이어 memo 히트가 기본 경로.
+ *  slice는 asOf가 바뀐 폴에서만 재계산 — 슬롯 사이 만료(interval validTo 경과 등)는
+ *  다음 슬롯 도착까지 유지되지만 상태 배지 tolerance가 지연을 정직 표기한다. */
+function createSimpleSource<R>(
+  layerOf: (doc: LatestDoc) => { asOf: string; records: R[] } | undefined,
+  slice: (records: R[], asOfMs: number | null, nowMs: number) => R[],
+): LayerIngest<R> {
+  let prev: SimpleLayerRaw<R> | null = null;
+  let prevSnapshot: LayerSnapshot<R> | null = null;
+
+  return function ingest(doc: unknown, nowMs: number): LayerSnapshot<R> | null {
+    const layers = (doc as LatestDoc | null)?.layers;
+    if (layers === undefined || layers === null || typeof layers !== 'object') return null;
+
+    const layer = layerOf(doc as LatestDoc);
+    if (layer === undefined) {
+      // 레이어 미수집 (partial 조립) — 빈 세계 (직전 상태도 비운다)
+      prev = null;
+      prevSnapshot = { records: [], asOfMs: null };
+      return prevSnapshot;
+    }
+    if (!Array.isArray(layer.records)) return null; // 계약 위반 — 부분 성공으로 위장 금지
+
+    if (prev !== null && prev.asOfIso === layer.asOf && prevSnapshot !== null) {
+      return prevSnapshot; // 무변경 — 기존 레코드 배열 참조 유지 (레이어 memo 키)
+    }
+
+    const at = Date.parse(layer.asOf);
+    const asOfMs = Number.isFinite(at) ? at : null;
+    prev = { asOfIso: layer.asOf, asOfMs, records: layer.records };
+    prevSnapshot = { records: slice(layer.records, asOfMs, nowMs), asOfMs };
+    return prevSnapshot;
+  };
+}
+
+/** weather = Interval — validFrom ≤ T < validTo 겹침 슬라이스 (TEMPORAL_SPEC.weather).
+ *  cancelled 숨김은 시간 계약이 아니라 표시 정책 (shared temporal.ts 주석) — 여기서 적용. */
+export function createWeatherSource(): LayerIngest<WeatherAlertRecord> {
+  return createSimpleSource(
+    (doc) => doc.layers.weather,
+    (records, _asOfMs, nowMs) =>
+      sliceInterval(records, nowMs).filter((r) => r.status !== 'cancelled'),
+  );
+}
+
+/** news = Occurrence — [T - 2시간, T] window (TEMPORAL_SPEC.news — 수집 지연 내성).
+ *  주의: occurredAt은 15분 슬롯 '종료' 시각이라 클라이언트 시계보다 미래일 수 있음
+ *  (실측: ingestedAt 09:26 < occurredAt 09:30) — T = max(now, asOf)로 최신 슬롯 소실 방지. */
+export function createNewsSource(): LayerIngest<NewsRecord> {
+  return createSimpleSource(
+    (doc) => doc.layers.news,
+    (records, asOfMs, nowMs) =>
+      sliceOccurrence(records, Math.max(nowMs, asOfMs ?? nowMs), NEWS_WINDOW_MS),
+  );
 }

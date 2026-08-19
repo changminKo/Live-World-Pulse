@@ -1,6 +1,7 @@
-/** Phase 0 레이어 기계 검증 — 실 API(프록시 latest + USGS)로 마커 렌더·픽킹·토글·FPS.
- *  종료 코드 단정: console/page 에러 0, 지진·항공기 레코드 수신, 클릭 픽킹 → sel URL 반영,
- *  토글 off → URL l 갱신, fps ≥ 50 (PLAN §10 데스크톱 목표 — 리뷰 Low2), 스크린샷 2장 갱신.
+/** Phase 1 레이어 기계 검증 — 실 API(프록시 latest + USGS)로 4레이어 마커 렌더·픽킹·토글·FPS.
+ *  종료 코드 단정: console/page 에러 0, 지진·항공기·기상·뉴스 레코드 수신, 클릭 픽킹 → sel
+ *  URL 반영, 토글 off → URL l 갱신, fps ≥ 50 (PLAN §10 데스크톱 목표), 스크린샷 갱신 +
+ *  TC 트랙 낮은 고도각(pitch) 육안 확인용 1장 (스파이크 이관 7 — globe 위 Path 지표 관통).
  *  주의: WebGL 픽셀 회귀 아님 (CLAUDE.md 테스트 규칙) — DOM/스토어/URL 단정만. */
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -39,13 +40,20 @@ const counts = await page.evaluate(() => {
   return {
     quakes: s.earthquake.records.length,
     flights: s.flight.records.length,
+    weather: s.weather.records.length,
+    news: s.news.records.length,
     quakeStatus: s.earthquake.status,
     flightStatus: s.flight.status,
+    weatherStatus: s.weather.status,
+    newsStatus: s.news.status,
     flightAsOf: s.flight.asOfMs,
   };
 });
 if (counts.quakes === 0) failures.push('quake records = 0 (USGS all_hour 정상 시 드묾 — 재확인)');
 if (counts.flights === 0) failures.push('flight records = 0 (6지역 전부 빈 것은 비정상)');
+// weather/news는 Collector 수집 주기(15분)라 0일 수 있으나, latest에 있으면 스토어에도 있어야 함
+if (counts.weather === 0) failures.push('weather records = 0 (GDACS 경보는 상시 수백 건 — latest 확인 필요)');
+if (counts.news === 0) failures.push('news records = 0 (GDELT 15분 슬롯 — latest 확인 필요)');
 
 // 헤더 LIVE 배지 — 하나라도 ready면 ● LIVE
 const badgeText = await page.locator('header span[title]').first().textContent();

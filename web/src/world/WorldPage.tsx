@@ -23,9 +23,12 @@ export default function WorldPage() {
   // LIVE 파이프라인 — 마운트 시 폴 루프 시작, 언마운트 시 정지
   useEffect(() => startLiveController(), []);
 
+  // LIVE 배지 — 4레이어 판정 (레이어별 수집 주기 × 2주기 임계 — live-store LAYER_STALE_MS)
   const earthquake = useLiveStore((s) => s.earthquake);
   const flight = useLiveStore((s) => s.flight);
-  const pulse = derivePulseStatus({ earthquake, flight });
+  const weather = useLiveStore((s) => s.weather);
+  const news = useLiveStore((s) => s.news);
+  const pulse = derivePulseStatus({ earthquake, flight, weather, news });
 
   return (
     <div className="grid h-full grid-cols-[216px_1fr_288px] grid-rows-[44px_1fr_52px] bg-[var(--bg-0)]">

@@ -106,6 +106,11 @@ export interface WeatherAlertPayload {
   gdacsAlertLevel: 'Green' | 'Orange' | 'Red' | null; // GDACS 원본 등급 보존 (rank 1/2/4 매핑)
   gdacsEventType: string | null; // GDACS 이벤트 종류 (TC/FL/...) — 비GDACS는 null
   url: string | null;
+  /** optional 추가 (2026-08-19): GDACS `todate`는 경보 해제 시각이 아니라 **관측
+   *  데이터 종료 시각**이다 — validTo로 쓰면 미해제 경보가 전부 과거 구간이 되어
+   *  interval 슬라이스에서 사라진다(실측 422/422 소실). 미해제 경보는 validTo=null로
+   *  두고 원본 todate는 여기에 보존한다. 해제된 경보는 validTo와 같은 값. */
+  observedUntil?: Iso | null;
 }
 
 /** 확정 코어 (Phase 0b — 이후 필드 추가는 optional로만, 기존 필드 변경 금지).

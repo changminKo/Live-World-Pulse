@@ -8,9 +8,11 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 describe('TEMPORAL_SPEC 선언 테이블', () => {
   it('레이어별 temporalMode가 PLAN §6과 일치한다', () => {
     expect(TEMPORAL_SPEC.earthquake).toEqual({ temporalMode: 'instant', windowMs: 3_600_000 });
-    expect(TEMPORAL_SPEC.news).toEqual({ temporalMode: 'instant', windowMs: 1_800_000 });
+    // news window 2시간 — 15분 슬롯 × 8 (수집 지연 내성. 2026-08-19 30분에서 완화)
+    expect(TEMPORAL_SPEC.news).toEqual({ temporalMode: 'instant', windowMs: 7_200_000 });
     expect(TEMPORAL_SPEC.weather).toEqual({ temporalMode: 'interval' });
-    expect(TEMPORAL_SPEC.flight).toEqual({ temporalMode: 'sampled', toleranceMs: 360_000 });
+    // flight tolerance 20분 — 지역당 10분 주기 × 2 (CPU 사다리 rung ① 분할의 귀결)
+    expect(TEMPORAL_SPEC.flight).toEqual({ temporalMode: 'sampled', toleranceMs: 1_200_000 });
   });
 });
 

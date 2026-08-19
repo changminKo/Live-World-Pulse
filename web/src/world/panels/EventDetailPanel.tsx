@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react';
-import type { EarthquakeRecord, FlightRecord } from '@lwp/shared';
+import type {
+  EarthquakeRecord,
+  FlightRecord,
+  NewsRecord,
+  WeatherAlertRecord,
+  WorldRecord,
+} from '@lwp/shared';
 import { useLiveStore } from '../../data/live-store';
 import { useWorldUiStore } from '../../state/world-ui-store';
 
-/** 클릭 픽킹 상세 패널 — 지진: M·깊이·장소·시각 / 항공기: callsign·고도·속도·기종.
+/** 클릭 픽킹 상세 패널 — 지진: M·깊이·장소·시각 / 항공기: callsign·고도·속도·기종 /
+ *  기상 경보: 이벤트명·등급·기간·지역 / 뉴스: 지역명·기사 수·대표 링크(rel=noopener).
  *  'delayed/diverted' 문구 금지 (CLAUDE.md 표기 규칙 — 계산 가능 지표만).
  *  키보드 계약 (PLAN §10, 리뷰 Med3): 열릴 때 패널로 포커스 이동, Tab 포커스 트랩,
  *  Esc 닫기, 닫히면 열기 전 포커스 요소로 복귀. */
@@ -19,15 +26,30 @@ const utc = (iso: string): string => {
 interface FieldProps {
   label: string;
   value: string;
+  /** 외부 링크 — 있으면 값이 앵커로 렌더 (target=_blank + rel=noopener) */
+  href?: string;
 }
 
-function Field({ label, value }: FieldProps) {
+function Field({ label, value, href }: FieldProps) {
   return (
     <div className="flex items-baseline gap-[var(--sp-2)]">
       <dt className="w-14 shrink-0 text-[length:var(--text-xs)] uppercase tracking-wide text-[var(--text-lo)]">
         {label}
       </dt>
-      <dd className="mono m-0 text-[length:var(--text-sm)] text-[var(--text-hi)]">{value}</dd>
+      <dd className="mono m-0 min-w-0 text-[length:var(--text-sm)] text-[var(--text-hi)]">
+        {href !== undefined ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block truncate text-[var(--layer-flight)] underline decoration-[var(--border)] hover:decoration-current"
+          >
+            {value}
+          </a>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   );
 }
@@ -53,18 +75,74 @@ function flightFields(r: FlightRecord): FieldProps[] {
   ];
 }
 
+/** 등급 = 원본값 우선 (GDACS 레벨/CAP severity), rank는 시각 인코딩 순위라 보조 표기 */
+function alertGradeOf(r: WeatherAlertRecord): string {
+  const raw = r.payload.gdacsAlertLevel ?? r.payload.capSeverity;
+  return raw === null ? `rank ${r.severity.rank}` : `${raw} (rank ${r.severity.rank})`;
+}
+
+function weatherFields(r: WeatherAlertRecord): FieldProps[] {
+  return [
+    { label: '이벤트', value: r.payload.event ?? r.payload.headline ?? '미상' },
+    { label: '등급', value: alertGradeOf(r) },
+    {
+      label: '기간',
+      value: `${utc(r.validFrom)} ~ ${r.validTo === null ? '미해제' : utc(r.validTo)}`,
+    },
+    { label: '지역', value: r.payload.areaDesc ?? '지역 미상' },
+  ];
+}
+
+function newsFields(r: NewsRecord): FieldProps[] {
+  const fields: FieldProps[] = [
+    { label: '지역', value: r.payload.placeName ?? '지역 미상' },
+    { label: '기사', value: `${r.payload.articleCount}건` },
+    { label: '슬롯', value: utc(r.occurredAt) },
+  ];
+  if (r.payload.sampleUrl !== null) {
+    fields.push({ label: '대표', value: r.payload.sampleUrl, href: r.payload.sampleUrl });
+  }
+  return fields;
+}
+
+const LAYER_HEADING: Record<WorldRecord['layer'], { text: string; colorVar: string }> = {
+  earthquake: { text: '● 지진', colorVar: '--layer-quake' },
+  flight: { text: '▲ 항공기', colorVar: '--layer-flight' },
+  weather: { text: '▩ 기상 경보', colorVar: '--layer-alert' },
+  news: { text: '■ 뉴스', colorVar: '--layer-news' },
+};
+
+function fieldsOf(record: WorldRecord): FieldProps[] {
+  switch (record.layer) {
+    case 'earthquake':
+      return quakeFields(record as EarthquakeRecord);
+    case 'flight':
+      return flightFields(record as FlightRecord);
+    case 'weather':
+      return weatherFields(record as WeatherAlertRecord);
+    case 'news':
+      return newsFields(record as NewsRecord);
+  }
+}
+
 export default function EventDetailPanel() {
   const selectedId = useWorldUiStore((s) => s.selectedId);
   const select = useWorldUiStore((s) => s.select);
   const quakes = useLiveStore((s) => s.earthquake.records);
   const flights = useLiveStore((s) => s.flight.records);
+  const alerts = useLiveStore((s) => s.weather.records);
+  const news = useLiveStore((s) => s.news.records);
 
-  const record = useMemo(() => {
+  const record = useMemo<WorldRecord | null>(() => {
     if (selectedId === null) return null;
     return (
-      quakes.find((r) => r.id === selectedId) ?? flights.find((r) => r.id === selectedId) ?? null
+      quakes.find((r) => r.id === selectedId) ??
+      flights.find((r) => r.id === selectedId) ??
+      alerts.find((r) => r.id === selectedId) ??
+      news.find((r) => r.id === selectedId) ??
+      null
     );
-  }, [selectedId, quakes, flights]);
+  }, [selectedId, quakes, flights, alerts, news]);
 
   const panelRef = useRef<HTMLElement | null>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
@@ -110,10 +188,8 @@ export default function EventDetailPanel() {
     }
   };
 
-  const isQuake = record.layer === 'earthquake';
-  const fields = isQuake
-    ? quakeFields(record as EarthquakeRecord)
-    : flightFields(record as FlightRecord);
+  const heading = LAYER_HEADING[record.layer];
+  const fields = fieldsOf(record);
 
   return (
     <section
@@ -128,9 +204,9 @@ export default function EventDetailPanel() {
       <header className="mb-[var(--sp-2)] flex items-center justify-between">
         <h3
           className="m-0 text-[length:var(--text-sm)] font-semibold"
-          style={{ color: isQuake ? 'var(--layer-quake)' : 'var(--layer-flight)' }}
+          style={{ color: `var(${heading.colorVar})` }}
         >
-          {isQuake ? '● 지진' : '▲ 항공기'}
+          {heading.text}
         </h3>
         <button
           type="button"

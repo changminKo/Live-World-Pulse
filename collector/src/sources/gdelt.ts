@@ -125,23 +125,29 @@ export function extractCsv(zipBytes: Uint8Array): string | null {
   }
 }
 
-/** 탭 워커 — 전체 split 없이 지정 컬럼만 추출. 컬럼 부족 시 null */
+/** 탭 워커 — 전체 split 없이 지정 컬럼만 추출. 컬럼 부족 시 null.
+ *  CPU 사다리 (2026-08-19): 문자 단위 charCodeAt 루프는 447KB CSV에서 4.2ms였다
+ *  (buildNewsRecords 총비용의 대부분). 탭 경계 탐색을 네이티브 indexOf로 바꿔
+ *  한 줄당 컬럼 수만큼만 호출한다 — 같은 결과, 훨씬 적은 JS 반복. */
 export function pickColumns(line: string, wanted: readonly number[]): string[] | null {
   const out: string[] = new Array(wanted.length).fill('');
   let col = 0;
   let start = 0;
   let found = 0;
-  for (let i = 0; i <= line.length; i += 1) {
-    if (i === line.length || line.charCodeAt(i) === 9) {
-      const w = wanted.indexOf(col);
-      if (w >= 0) {
-        out[w] = line.slice(start, i);
-        found += 1;
-      }
-      col += 1;
-      start = i + 1;
-      if (col > LAST_NEEDED_COL && found === wanted.length) break;
+  const len = line.length;
+  while (start <= len) {
+    let end = line.indexOf('\t', start);
+    if (end < 0) end = len;
+    const w = wanted.indexOf(col);
+    if (w >= 0) {
+      out[w] = line.slice(start, end);
+      found += 1;
+      if (found === wanted.length) break;
     }
+    if (end === len) break;
+    col += 1;
+    start = end + 1;
+    if (col > LAST_NEEDED_COL) break;
   }
   return found === wanted.length ? out : null;
 }

@@ -13,13 +13,22 @@ export type TemporalSpec =
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
 
-/** 레이어별 T 해석 선언 (PLAN §6). flight tolerance = 지역당 3분 주기 × 2 =
- *  6분 — `◐ 지연` 강등 규칙(CLAUDE.md, 2주기 무갱신)과 같은 상수. */
+/** 레이어별 T 해석 선언 (PLAN §6).
+ *
+ *  flight tolerance = 지역당 수집 주기 × 2 = 20분 (2026-08-19 CPU 사다리 재조정):
+ *  Workers Free 하드 10ms/invocation에서 한 invocation = 1지역만 처리하도록 분할해
+ *  6지역 × 시간당 6회 = 지역당 10분 주기가 됐다 (collector schedule.ts MINUTE_TASKS).
+ *  `● LIVE`/`◐ 지연` 배지 임계(6분, CLAUDE.md)와는 별개 상수 — 배지는 통합
+ *  latest.json 갱신 간격(매분 재조립)을 보고, tolerance는 개별 표본의 낡음을 본다.
+ *
+ *  news window = 2시간 (2026-08-19): GDELT는 15분 파일 단위 이산 이벤트라 window는
+ *  "표시 범위"다. 30분은 수집이 한 슬롯만 밀려도 레이어가 전멸했다 (실측: 수집 지연
+ *  2시간 중 window 30분 → 표시 0건). 15분 슬롯 × 8 = 2시간이면 지연에도 견딘다. */
 export const TEMPORAL_SPEC: Record<LayerId, TemporalSpec> = {
   earthquake: { temporalMode: 'instant', windowMs: HOUR_MS },
-  news: { temporalMode: 'instant', windowMs: 30 * MINUTE_MS },
+  news: { temporalMode: 'instant', windowMs: 2 * HOUR_MS },
   weather: { temporalMode: 'interval' },
-  flight: { temporalMode: 'sampled', toleranceMs: 6 * MINUTE_MS },
+  flight: { temporalMode: 'sampled', toleranceMs: 20 * MINUTE_MS },
 };
 
 const epochOf = (iso: string): number => Date.parse(iso);

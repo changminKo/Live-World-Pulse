@@ -1,17 +1,20 @@
 /** Live World Pulse — Collector + 읽기 프록시 엔트리.
- *  cron "* * * * *" 1개: 지진 매분 + 항공기 m%3 지역 디스패치 (PLAN §8.7)
- *  + Phase 1: weather(GDACS) m%15==2, news(GDELT) m%15==9.
- *  UTC 03:07에 daily capacity scan (§8.6 fail-safe) — halt 플래그 존재 시 수집 전면 스킵.
+ *  cron "* * * * *" 1개. **한 invocation = 작업 1개** (CPU 사다리 rung ① — Free 플랜
+ *  하드 10ms/invocation). 분 → 작업 배정은 schedule.ts MINUTE_TASKS가 결정하고,
+ *  latest.json 재조립만 매 분 공통으로 돈다 (byte concat ~0.3ms — r2/latest.ts).
+ *  UTC 03:13에 daily capacity scan (§8.6 fail-safe) — 그 분은 수집 작업을 건너뛴다.
+ *  halt 플래그 존재 시 수집 전면 스킵.
  *  fetch: /__gates/*(GATE_TOKEN) + /api/* 읽기 프록시 (§8.6 공개 접근 경로 — proxy.ts). */
 import {
-  collectFlights,
+  collectFlightRegion,
   collectNews,
   collectNewsProcess,
   collectQuakes,
   collectWeather,
   collectWeatherCommit,
 } from './collect';
-import { isNewsMinute, isNewsProcessMinute, isWeatherCommitMinute, isWeatherMinute } from './schedule';
+import { taskForMinute } from './schedule';
+import type { MinuteTask } from './schedule';
 import { assembleLatest } from './r2/latest';
 import { handleApi } from './proxy';
 import { adsbGate } from './gates/adsb';
@@ -19,17 +22,41 @@ import { gdeltGate } from './gates/gdelt';
 import { adsbRetryGate, altSourceGate, flightOneRegionGate, quakeOnlyGate } from './gates/probe';
 import { isHalted, isScanSlot, runDailyCapacityScan, runPollRelaxScan } from './r2/capacity';
 import type { PollRelaxResult } from './r2/capacity';
+import type { CollectSummary } from './collect';
 import type { Env } from './types';
+
+/** 분 테이블이 지정한 단 하나의 작업 실행. idle은 조립만 하는 분이다. */
+async function runTask(env: Env, task: MinuteTask, scheduledMs: number): Promise<CollectSummary | null> {
+  switch (task.kind) {
+    case 'quake':
+      return collectQuakes(env, scheduledMs);
+    case 'flight':
+      return collectFlightRegion(env, scheduledMs, task.region);
+    case 'weather-fetch':
+      return collectWeather(env, scheduledMs);
+    case 'weather-commit':
+      return collectWeatherCommit(env, scheduledMs);
+    case 'news-fetch':
+      return collectNews(env, scheduledMs);
+    case 'news-process':
+      return collectNewsProcess(env, scheduledMs);
+    case 'idle':
+      return null;
+  }
+}
 
 export default {
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const scheduledMs = controller.scheduledTime;
     const scheduledAt = new Date(scheduledMs).toISOString();
+    const task = taskForMinute(scheduledMs);
+    const taskLabel = task.kind === 'flight' ? `flight:${task.region.id}` : task.kind;
 
     let capacity: Record<string, unknown> | undefined;
     let pollRelax: PollRelaxResult | undefined;
     let scanFailed = false;
-    if (isScanSlot(scheduledMs)) {
+    const scanSlot = isScanSlot(scheduledMs);
+    if (scanSlot) {
       try {
         const record = await runDailyCapacityScan(env.DATA, scheduledMs);
         capacity = { totalBytes: record.totalBytes, overLimit: record.overLimit };
@@ -45,72 +72,52 @@ export default {
 
     // §8.6 fail-safe ②: halt 플래그 존재 = 수집 스킵 (자동 과금 차단이 수집보다 먼저)
     if (await isHalted(env.DATA)) {
-      console.log(JSON.stringify({ scheduledAt, halted: true, capacity, pollRelax }));
+      console.log(JSON.stringify({ scheduledAt, task: taskLabel, halted: true, capacity, pollRelax }));
       await pingHealthchecks(env, false); // halt는 비정상 상태 — 데드맨 알림 유지
       return;
     }
 
-    // weather/news는 15분 슬롯에만 — 나머지 분은 프로퍼티 자체가 없다 (스킵 ≠ 실패).
-    // CPU 사다리 (§8.7 invocation 분할): fetch 분(m%15==2/9)과 파싱·norm 커밋 분(m%15==5/11) 분리.
-    const weatherDue = isWeatherMinute(scheduledMs);
-    const weatherCommitDue = isWeatherCommitMinute(scheduledMs);
-    const newsDue = isNewsMinute(scheduledMs);
-    const newsProcessDue = isNewsProcessMinute(scheduledMs);
-    const [quakes, flights, weather, weatherCommit, news, newsProcess] = await Promise.allSettled([
-      collectQuakes(env, scheduledMs),
-      collectFlights(env, scheduledMs),
-      weatherDue ? collectWeather(env, scheduledMs) : Promise.resolve(null),
-      weatherCommitDue ? collectWeatherCommit(env, scheduledMs) : Promise.resolve(null),
-      newsDue ? collectNews(env, scheduledMs) : Promise.resolve(null),
-      newsProcessDue ? collectNewsProcess(env, scheduledMs) : Promise.resolve(null),
-    ]);
+    // 스캔 분은 LIST 전수 순회로 CPU를 쓰므로 수집 작업을 겹치지 않는다 (사다리 rung ①).
+    // 스캔 슬롯은 idle 분(schedule.ts)에 배정돼 있어 평상시 손실이 없다.
+    const result = scanSlot ? null : await runTask(env, task, scheduledMs).catch((error: unknown) => ({
+      ok: false,
+      layer: task.kind,
+      detail: { reason: 'exception', error: String(error) },
+    }));
 
-    // 매 invocation 말미 통합 latest.json 재조립 (재리뷰 High1 — 프록시 9 GET 되돌림).
-    // 파트는 pre-serialized 문자열 그대로 concat — r2/latest.ts assembleLatest 주석 참조.
+    // 작업 뒤 통합 latest.json 재조립 (재리뷰 High1 — 프록시 9 GET 되돌림).
+    // 파트는 pre-serialized 바이트 그대로 concat — r2/latest.ts assembleLatest 주석 참조.
     // 조립 실패 = latest 정체 → 데드맨 신호에 포함 (아래 allOk).
     let latestAssembly: Record<string, unknown>;
     let latestOk = true;
     try {
-      const result = await assembleLatest(env.DATA);
+      const assembled = await assembleLatest(env.DATA);
       latestAssembly = {
-        written: result.written,
-        partial: result.partial,
-        ...(result.invalid.length > 0 ? { invalid: result.invalid } : {}),
-        bytes: result.bytes,
+        written: assembled.written,
+        partial: assembled.partial,
+        ...(assembled.invalid.length > 0 ? { invalid: assembled.invalid } : {}),
+        bytes: assembled.bytes,
       };
     } catch (error: unknown) {
       latestOk = false;
       latestAssembly = { ok: false, error: String(error) };
     }
 
-    const settled = (r: PromiseSettledResult<unknown>) =>
-      r.status === 'fulfilled' ? r.value : { ok: false, error: String(r.reason) };
-    const summary = {
-      scheduledAt,
-      capacity,
-      pollRelax,
-      latest: latestAssembly,
-      earthquake: settled(quakes),
-      flight: settled(flights),
-      ...(weatherDue ? { weather: settled(weather) } : {}),
-      ...(weatherCommitDue ? { weatherCommit: settled(weatherCommit) } : {}),
-      ...(newsDue ? { news: settled(news) } : {}),
-      ...(newsProcessDue ? { newsProcess: settled(newsProcess) } : {}),
-    };
-    // 관측용 구조화 로그 — wrangler tail / Workers Logs에서 invocation별 확인
-    console.log(JSON.stringify(summary));
+    // 관측용 구조화 로그 — wrangler tail / Workers Logs에서 invocation별 확인.
+    // task 라벨이 있으므로 tail의 cpuTime이 곧 그 작업의 CPU 실측치다.
+    console.log(
+      JSON.stringify({
+        scheduledAt,
+        task: taskLabel,
+        ...(scanSlot ? { scanSlot: true } : {}),
+        capacity,
+        pollRelax,
+        latest: latestAssembly,
+        ...(result ? { result } : {}),
+      }),
+    );
 
-    const okOf = (r: PromiseSettledResult<{ ok: boolean } | null>, due: boolean) =>
-      !due || (r.status === 'fulfilled' && r.value !== null && r.value.ok);
-    const allOk =
-      !scanFailed &&
-      latestOk &&
-      okOf(quakes, true) &&
-      okOf(flights, true) &&
-      okOf(weather, weatherDue) &&
-      okOf(weatherCommit, weatherCommitDue) &&
-      okOf(news, newsDue) &&
-      okOf(newsProcess, newsProcessDue);
+    const allOk = !scanFailed && latestOk && (result === null || result.ok);
     await pingHealthchecks(env, allOk);
   },
 

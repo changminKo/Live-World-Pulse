@@ -1,12 +1,12 @@
-/** index.scheduled 슬롯 라우팅 (리뷰 Low2 — due 분기 미커버) —
- *  weather/news fetch·커밋 슬롯이 정확한 분에만 실행되고,
- *  각 레이어의 latest 파트가 서로를 지우지 않는지(레이어 보존) 검증. */
+/** index.scheduled 분 테이블 라우팅 (CPU 사다리 rung ① — 한 invocation에 1작업).
+ *  각 분이 자기 작업만 호출하고 다른 소스는 건드리지 않는지, 그리고 각 레이어의
+ *  latest 파트가 서로를 지우지 않는지(레이어 보존) 검증. */
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import worker from '../src/index';
 import { latestFlightRegionKey, latestLayerKey } from '../src/r2/latest';
 import type { LatestDoc, SnapshotPart } from '../src/r2/latest';
 import { LATEST_KEY } from '../src/slots';
-import { regionsForMinute } from '../src/schedule';
+import { taskForMinute } from '../src/schedule';
 import { pointUrl } from '../src/sources/adsblol';
 import { USGS_ALL_HOUR_URL } from '../src/sources/usgs';
 import { GDELT_LASTUPDATE_URL } from '../src/sources/gdelt';
@@ -61,52 +61,73 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('index.scheduled — weather/news due 라우팅', () => {
-  test('일반 분(m%15==1): 지진+항공기만 — GDACS/GDELT 콜 없음', async () => {
+describe('index.scheduled — 분 테이블 라우팅', () => {
+  test('flight 분(m=1): 항공기 1지역만 — USGS·GDACS·GDELT 콜 없음', async () => {
     const calls = stubAllSources();
     await runScheduled(new FakeR2(), Date.UTC(2026, 7, 19, 12, 1, 0));
 
-    expect(calls.some((u) => u === USGS_ALL_HOUR_URL)).toBe(true);
-    expect(calls.filter((u) => u.includes('api.adsb.lol')).length).toBe(2);
+    // rung ①: 한 invocation = 1작업. 지진도 같은 분에 돌지 않는다.
+    expect(calls.filter((u) => u.includes('api.adsb.lol')).length).toBe(1);
+    expect(calls.some((u) => u === USGS_ALL_HOUR_URL)).toBe(false);
     expect(calls.some((u) => u.includes('gdacs'))).toBe(false);
     expect(calls.some((u) => u.includes('gdelt'))).toBe(false);
   });
 
-  test('m%15==2: GDACS fetch 단계 실행 (3레벨), GDELT 없음', async () => {
+  test('quake 분(m=0): USGS만', async () => {
     const calls = stubAllSources();
-    await runScheduled(new FakeR2(), Date.UTC(2026, 7, 19, 12, 2, 0));
+    await runScheduled(new FakeR2(), Date.UTC(2026, 7, 19, 12, 0, 0));
+
+    expect(calls.some((u) => u === USGS_ALL_HOUR_URL)).toBe(true);
+    expect(calls.some((u) => u.includes('api.adsb.lol'))).toBe(false);
+  });
+
+  test('weather-fetch 분(m=6): GDACS 3레벨 fetch, 그 외 없음', async () => {
+    const calls = stubAllSources();
+    await runScheduled(new FakeR2(), Date.UTC(2026, 7, 19, 12, 6, 0));
 
     expect(calls.filter((u) => u.includes('geteventlist/SEARCH')).length).toBe(3);
     expect(calls.some((u) => u.includes('gdelt'))).toBe(false);
+    expect(calls.some((u) => u.includes('api.adsb.lol'))).toBe(false);
   });
 
-  test('m%15==9: GDELT fetch 단계 실행 (lastupdate+zip), GDACS 없음', async () => {
+  test('news-fetch 분(m=2): GDELT lastupdate+zip raw만 — norm 없음', async () => {
     const calls = stubAllSources();
     const fake = new FakeR2();
-    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 9, 0));
+    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 2, 0));
 
     expect(calls.some((u) => u === GDELT_LASTUPDATE_URL)).toBe(true);
     expect(calls.some((u) => u === EXPORT_URL)).toBe(true);
     expect(calls.some((u) => u.includes('gdacs'))).toBe(false);
-    // fetch 단계는 raw만 — norm 없음
     expect(fake.keysWithPrefix('raw/gdelt/')).toHaveLength(1);
     expect(fake.keysWithPrefix('norm/news/')).toHaveLength(0);
   });
 
-  test('m%15==5/11: 커밋·처리 단계 실행 — 각각 GDACS 재fetch 복구 / GDELT raw 되읽기', async () => {
+  test('커밋·처리 분(m=9 / m=4): GDACS 재fetch 복구 / GDELT raw 되읽기', async () => {
     const calls = stubAllSources();
     const fake = new FakeR2();
-    // m5 — raw가 없으므로 인라인 재fetch 경로
-    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 5, 0));
+    // m=9 — raw가 없으므로 인라인 재fetch 복구 경로
+    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 9, 0));
     expect(calls.filter((u) => u.includes('geteventlist/SEARCH')).length).toBe(3);
 
-    // m11 — lastupdate로 파일 키 재확인 (zip은 없으면 재fetch)
+    // m=4 — lastupdate로 파일 키 재확인 (zip은 없으면 재fetch)
     const before = calls.length;
-    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 11, 0));
+    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 4, 0));
     expect(calls.slice(before).some((u) => u === GDELT_LASTUPDATE_URL)).toBe(true);
   });
 
-  test('레이어 보존: 지진+항공기 분이 weather/news latest 파트를 건드리지 않는다', async () => {
+  test('idle 분(m=13): 수집 콜 0 — latest 재조립만', async () => {
+    const calls = stubAllSources();
+    const fake = new FakeR2();
+    const seeded: SnapshotPart<never> = { asOf: '2026-08-19T11:47:00.000Z', records: [] };
+    fake.seed(latestLayerKey('weather'), JSON.stringify(seeded), undefined, { asOf: seeded.asOf });
+
+    await runScheduled(fake, Date.UTC(2026, 7, 19, 12, 13, 0));
+
+    expect(calls).toHaveLength(0);
+    expect(fake.jsonOf<LatestDoc>(LATEST_KEY)!.layers.weather?.asOf).toBe('2026-08-19T11:47:00.000Z');
+  });
+
+  test('레이어 보존: flight 분이 weather/news latest 파트를 건드리지 않는다', async () => {
     stubAllSources();
     const fake = new FakeR2();
     const weatherPart: SnapshotPart<never> = { asOf: '2026-08-19T11:47:00.000Z', records: [] };
@@ -115,20 +136,20 @@ describe('index.scheduled — weather/news due 라우팅', () => {
     fake.seed(latestLayerKey('news'), JSON.stringify(newsPart), undefined, { asOf: newsPart.asOf });
 
     const T = Date.UTC(2026, 7, 19, 12, 1, 0);
+    const task = taskForMinute(T);
+    expect(task.kind).toBe('flight');
     await runScheduled(fake, T);
 
-    // weather/news 파트 불변, 지진·항공기 파트는 생성
     expect(fake.jsonOf<SnapshotPart<never>>(latestLayerKey('weather'))!.asOf).toBe('2026-08-19T11:47:00.000Z');
     expect(fake.jsonOf<SnapshotPart<never>>(latestLayerKey('news'))!.asOf).toBe('2026-08-19T11:45:00.000Z');
-    expect(fake.store.has(latestLayerKey('earthquake'))).toBe(true);
-    const [r1] = regionsForMinute(T);
-    expect(fake.store.has(latestFlightRegionKey(r1.id))).toBe(true);
-    expect(pointUrl(r1)).toContain('api.adsb.lol'); // 스텁 라우팅 전제 확인
+    if (task.kind === 'flight') {
+      expect(fake.store.has(latestFlightRegionKey(task.region.id))).toBe(true);
+      expect(pointUrl(task.region)).toContain('api.adsb.lol'); // 스텁 라우팅 전제 확인
+    }
 
     // invocation 말미 통합 latest.json 재조립 (재리뷰 High1) — 기존 파트도 함께 실린다
     const latest = fake.jsonOf<LatestDoc>(LATEST_KEY)!;
     expect(latest.layers.weather?.asOf).toBe('2026-08-19T11:47:00.000Z');
-    expect(latest.layers.earthquake).toBeDefined();
-    expect(latest.partial).toBeDefined(); // 이 분엔 일부 지역 파트가 없다 — 정직 표기
+    expect(latest.partial).toBeDefined(); // 이 분엔 대부분의 지역 파트가 없다 — 정직 표기
   });
 });

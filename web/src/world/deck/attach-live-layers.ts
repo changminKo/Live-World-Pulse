@@ -32,6 +32,8 @@ export function attachLiveLayers(map: maplibregl.Map, overlay: MapboxOverlay): (
       layers: buildLayers({
         quakes: live.earthquake.records,
         flightRegions: live.flightRegions,
+        alerts: live.weather.records,
+        news: live.news.records,
         quakeArrivals: live.quakeArrivals,
         enabled: ui.enabled,
         selectedId: ui.selectedId,

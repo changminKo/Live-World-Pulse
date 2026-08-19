@@ -19,9 +19,16 @@ export const RECENT_EXPIRED_WINDOW_MS = 48 * 3600_000;
 
 /** 페이지 크기 — 서버 기본이자 상한 100 (Swagger·실측 2026-08-19) */
 export const GDACS_PAGE_SIZE = 100;
-/** 레벨당 페이지 안전 캡 — 히스토리 무한 페이징 방어. 캡 도달 = capped 신호로 기록
- *  (2026-08-19 실측: Green current가 300건+ — 단일 콜 100건 캡으로 조용히 누락됐던 리뷰 High). */
-export const GDACS_PAGE_CAP = 10;
+/** 레벨당 페이지 안전 캡 — 히스토리 무한 페이징 방어 + CPU 예산. 캡 도달 = capped 신호로 기록.
+ *  2026-08-19 CPU 사다리 재조정으로 10 → 4:
+ *  - 커밋 슬롯은 이 슬롯의 raw 페이지를 전부 gunzip+parse+normalize한다. 프로덕션
+ *    cpuTime 실측 2점(4페이지 20ms / 16페이지 59ms)의 선형 모델이 ≈ 7ms + 3.3ms/페이지 —
+ *    Green 10페이지(총 12)면 ~47ms까지 오른다. 4페이지 캡(총 6)이면 ~27ms.
+ *  - GDACS SEARCH는 iscurrent 파라미터를 무시하지만(실측: 지정/미지정 응답 바이트 동일)
+ *    current를 앞쪽 페이지에 정렬해 돌려준다 — current가 0인 페이지에서 조기 종료하므로
+ *    평상시엔 캡에 닿지 않고, Green current 실측 총량 ~425건이라 4페이지가 사실상 전량이다.
+ *  - 잘림은 숨기지 않는다: capped 신호 → status 원장 `page_capped`. */
+export const GDACS_PAGE_CAP = 4;
 
 export function gdacsListUrl(level: GdacsAlertLevel, page = 1): string {
   return `https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?alertlevel=${level}&pagenumber=${page}&pagesize=${GDACS_PAGE_SIZE}`;
@@ -99,9 +106,15 @@ export function normalizeGdacsList(
     }
     const [lon, lat] = lonLat;
 
-    const validTo = gdacsUtcIso(p.todate);
+    // GDACS `todate` 계약 정정 (2026-08-19): todate는 **경보 해제 시각이 아니라 관측
+    // 데이터가 끝난 시각**이다. 미해제(iscurrent) 경보도 todate가 과거로 나오기 때문에
+    // 그대로 validTo로 쓰면 sliceInterval(validFrom ≤ T < validTo)에서 전부 탈락한다
+    // (프로덕션 실측: latest 422건 중 활성 0건). 미해제는 validTo=null(§5 '미해제')로
+    // 두고 원본 todate는 payload.observedUntil에 보존한다.
+    const observedUntil = gdacsUtcIso(p.todate);
     const isCurrent = p.iscurrent === 'true' || p.iscurrent === true;
-    if (!isCurrent && (!validTo || Date.parse(validTo) < ingestedAtMs - RECENT_EXPIRED_WINDOW_MS)) {
+    const validTo = isCurrent ? null : observedUntil;
+    if (!isCurrent && (!observedUntil || Date.parse(observedUntil) < ingestedAtMs - RECENT_EXPIRED_WINDOW_MS)) {
       continue; // 히스토리 잔재 — 갭이 아니라 의도된 스킵
     }
 
@@ -115,6 +128,7 @@ export function normalizeGdacsList(
       gdacsAlertLevel: level,
       gdacsEventType: eventType,
       url: strOrNull(p.url?.report),
+      observedUntil,
     };
 
     const sourceId = `${eventId}:${episodeId}`;
@@ -143,6 +157,24 @@ export function normalizeGdacsList(
   }
 
   return { ok: true, records, dropped };
+}
+
+/** fetch 슬롯용 초경량 스캐너 — JSON.parse 없이 응답 텍스트에서 feature/current 개수만 센다.
+ *  fetch 슬롯의 목적은 raw 적재이고, 정규화는 커밋 슬롯이 raw를 되읽어 한 번만 한다
+ *  (중복 정규화 제거 = CPU 사다리 rung ①). 페이징 종료 판정에만 쓰는 근사치라
+ *  구조 검증은 커밋 슬롯의 normalizeGdacsList가 담당한다. */
+export function scanGdacsPage(text: string): { features: number; current: number } {
+  return { features: countOccurrences(text, '"eventid"'), current: countOccurrences(text, '"iscurrent":"true"') };
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let at = haystack.indexOf(needle);
+  while (at >= 0) {
+    count += 1;
+    at = haystack.indexOf(needle, at + needle.length);
+  }
+  return count;
 }
 
 /** 레벨별 3콜 union — 같은 (eventid, episodeid)는 revision(datemodified) 큰 쪽 유지 */

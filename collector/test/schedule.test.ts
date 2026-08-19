@@ -1,87 +1,94 @@
+/** 분 단위 태스크 테이블 계약 (PLAN §8.7 + CPU 사다리 rung ① — 한 invocation에 1작업).
+ *  검증 축: ① 분 → 작업이 정확히 1개 ② 슬롯 배분(주기) ③ 지역 라운드로빈 균등·최대 간격
+ *  ④ capacity scan 분(03:13)이 수집 작업과 겹치지 않음. */
 import { describe, expect, test } from 'vitest';
-import {
-  REGIONS,
-  isNewsMinute,
-  isNewsProcessMinute,
-  isWeatherCommitMinute,
-  isWeatherMinute,
-  regionsForMinute,
-} from '../src/schedule';
+import { MINUTE_TASKS, REGIONS, taskForMinute } from '../src/schedule';
+import { SCAN_HOUR_UTC, SCAN_MINUTE_UTC } from '../src/r2/capacity';
+import { TEMPORAL_SPEC } from '@lwp/shared';
 
-describe('스케줄 배분 (m%3 — PLAN §8.7)', () => {
-  // 2026-08-19T00:00:00Z = 1755561600000 — 분 단위 정렬 기준점
-  const T0 = Date.UTC(2026, 7, 19, 0, 0, 0);
-  const MIN = 60_000;
+const at = (minute: number): number => Date.UTC(2026, 7, 19, 12, minute, 0);
 
-  test('m%3==0 → 서울·도쿄', () => {
-    // Arrange: epoch 분이 3의 배수인 시각
-    const base = Math.floor(T0 / MIN);
-    const t = (base + ((3 - (base % 3)) % 3)) * MIN;
+function countOf(kind: string): number {
+  return MINUTE_TASKS.filter((t) => t.kind === kind).length;
+}
 
-    // Act
-    const [a, b] = regionsForMinute(t);
-
-    // Assert
-    expect(a.id).toBe('seoul');
-    expect(b.id).toBe('tokyo');
-  });
-
-  test('m%3==1 → 런던·프랑크푸르트, m%3==2 → 뉴욕·LA', () => {
-    const base = Math.floor(T0 / MIN);
-    const t0 = (base + ((3 - (base % 3)) % 3)) * MIN;
-
-    const [c, d] = regionsForMinute(t0 + MIN);
-    expect([c.id, d.id]).toEqual(['london', 'frankfurt']);
-
-    const [e, f] = regionsForMinute(t0 + 2 * MIN);
-    expect([e.id, f.id]).toEqual(['newyork', 'losangeles']);
-  });
-
-  test('3분 주기 순환 — t와 t+3분은 같은 지역쌍', () => {
-    const t = T0 + 7 * MIN;
-    const [a1, b1] = regionsForMinute(t);
-    const [a2, b2] = regionsForMinute(t + 3 * MIN);
-    expect([a1.id, b1.id]).toEqual([a2.id, b2.id]);
-  });
-
-  test('weather 슬롯 m%15==2 / news 슬롯 m%15==9 — 서로 다른 분에 분산', () => {
-    const t = (minute: number) => Date.UTC(2026, 7, 19, 12, minute, 0);
-
-    expect(isWeatherMinute(t(2))).toBe(true);
-    expect(isWeatherMinute(t(17))).toBe(true);
-    expect(isWeatherMinute(t(9))).toBe(false);
-    expect(isNewsMinute(t(9))).toBe(true);
-    expect(isNewsMinute(t(24))).toBe(true);
-    expect(isNewsMinute(t(2))).toBe(false);
-
-    // 한 시간 내 어떤 분에도 weather·news가 같은 invocation에 겹치지 않는다
-    for (let m = 0; m < 60; m += 1) {
-      expect(isWeatherMinute(t(m)) && isNewsMinute(t(m))).toBe(false);
+describe('MINUTE_TASKS — 분 → 작업 1개', () => {
+  test('60분 전부 정확히 1개 작업으로 채워진다', () => {
+    expect(MINUTE_TASKS).toHaveLength(60);
+    for (const task of MINUTE_TASKS) {
+      expect(typeof task.kind).toBe('string');
     }
   });
 
-  test('CPU 분할 슬롯 — fetch/커밋 4슬롯이 서로·capacity scan(m%15==7)과 비겹침, 무거운 지역쌍(m%3==1) 회피', () => {
-    const t = (minute: number) => Date.UTC(2026, 7, 19, 12, minute, 0);
+  test('슬롯 배분 — flight 36 / quake 6 / weather 2+2 / news 4+4 / idle 6', () => {
+    expect(countOf('flight')).toBe(36);
+    expect(countOf('quake')).toBe(6);
+    expect(countOf('weather-fetch')).toBe(2);
+    expect(countOf('weather-commit')).toBe(2);
+    expect(countOf('news-fetch')).toBe(4);
+    expect(countOf('news-process')).toBe(4);
+    expect(countOf('idle')).toBe(6);
+  });
 
-    expect(isWeatherCommitMinute(t(5))).toBe(true);
-    expect(isWeatherCommitMinute(t(20))).toBe(true);
-    expect(isNewsProcessMinute(t(11))).toBe(true);
-    expect(isNewsProcessMinute(t(26))).toBe(true);
-
+  test('taskForMinute는 UTC 분of시간만 본다 (stateless·결정론)', () => {
     for (let m = 0; m < 60; m += 1) {
-      const due = [
-        isWeatherMinute(t(m)),
-        isWeatherCommitMinute(t(m)),
-        isNewsMinute(t(m)),
-        isNewsProcessMinute(t(m)),
-      ].filter(Boolean).length;
-      // 한 분에 weather/news 작업은 최대 1개 + 커밋 슬롯은 daily scan 분(m%15==7)과 비겹침
-      expect(due).toBeLessThanOrEqual(1);
-      if (due === 1) expect(m % 15).not.toBe(7);
-      // 커밋(무거운 파싱) 분은 런던·프랑크푸르트(m%3==1) 분을 피한다
-      if (isWeatherCommitMinute(t(m)) || isNewsProcessMinute(t(m))) {
-        expect(m % 3).not.toBe(1);
+      expect(taskForMinute(at(m))).toEqual(MINUTE_TASKS[m]);
+      // 다른 시각·다른 날짜라도 같은 분이면 같은 작업
+      expect(taskForMinute(Date.UTC(2027, 0, 1, 5, m, 30))).toEqual(MINUTE_TASKS[m]);
+    }
+  });
+
+  test('weather는 fetch → commit 순서, news도 fetch → process 순서', () => {
+    const minutesOf = (kind: string): number[] =>
+      MINUTE_TASKS.flatMap((t, m) => (t.kind === kind ? [m] : []));
+
+    expect(minutesOf('weather-fetch')).toEqual([6, 36]);
+    expect(minutesOf('weather-commit')).toEqual([9, 39]);
+    expect(minutesOf('news-fetch')).toEqual([2, 17, 32, 47]);
+    expect(minutesOf('news-process')).toEqual([4, 19, 34, 49]);
+    // 커밋은 같은 900s norm 슬롯 안에 있어야 raw 되읽기가 성립한다
+    for (const [f, c] of [
+      [6, 9],
+      [36, 39],
+    ]) {
+      expect(Math.floor(f! / 15)).toBe(Math.floor(c! / 15));
+    }
+    for (const [f, c] of [
+      [2, 4],
+      [17, 19],
+      [32, 34],
+      [47, 49],
+    ]) {
+      expect(Math.floor(f! / 15)).toBe(Math.floor(c! / 15));
+    }
+  });
+});
+
+describe('flight 지역 라운드로빈', () => {
+  test('6지역이 시간당 정확히 6회씩 — 편향 없음', () => {
+    const counts = new Map<string, number>();
+    for (const task of MINUTE_TASKS) {
+      if (task.kind !== 'flight') continue;
+      counts.set(task.region.id, (counts.get(task.region.id) ?? 0) + 1);
+    }
+    expect([...counts.keys()].sort()).toEqual([...REGIONS.map((r) => r.id)].sort());
+    for (const [, n] of counts) expect(n).toBe(6);
+  });
+
+  test('지역별 최대 재방문 간격 < TEMPORAL_SPEC.flight tolerance (stale 상시 오탐 금지)', () => {
+    const spec = TEMPORAL_SPEC.flight;
+    expect(spec.temporalMode).toBe('sampled');
+    const toleranceMin = spec.temporalMode === 'sampled' ? spec.toleranceMs / 60_000 : 0;
+
+    for (const region of REGIONS) {
+      const minutes = MINUTE_TASKS.flatMap((t, m) => (t.kind === 'flight' && t.region.id === region.id ? [m] : []));
+      expect(minutes.length).toBe(6);
+      let maxGap = 0;
+      for (let i = 0; i < minutes.length; i += 1) {
+        const next = i + 1 < minutes.length ? minutes[i + 1]! : minutes[0]! + 60; // 시간 경계 wrap
+        maxGap = Math.max(maxGap, next - minutes[i]!);
       }
+      expect(maxGap).toBeLessThan(toleranceMin);
     }
   });
 
@@ -94,5 +101,12 @@ describe('스케줄 배분 (m%3 — PLAN §8.7)', () => {
       [40.71, -74.01],
       [34.05, -118.25],
     ]);
+  });
+});
+
+describe('capacity scan 분 격리', () => {
+  test('scan 분(03:13)은 idle — 전수 LIST가 수집 작업과 CPU를 다투지 않는다', () => {
+    expect(SCAN_HOUR_UTC).toBe(3);
+    expect(MINUTE_TASKS[SCAN_MINUTE_UTC]?.kind).toBe('idle');
   });
 });

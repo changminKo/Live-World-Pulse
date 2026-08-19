@@ -1,7 +1,12 @@
 import { normalizeUsgs, sliceOccurrence, TEMPORAL_SPEC, USGS_ALL_HOUR_URL } from '@lwp/shared';
 import { startPollLoop, type PollOutcome } from './poll-loop';
 import { useLiveStore } from './live-store';
-import { createFlightSource, LATEST_URL } from './latest-source';
+import {
+  createFlightSource,
+  createNewsSource,
+  createWeatherSource,
+  LATEST_URL,
+} from './latest-source';
 
 /** LIVE 파이프라인 컨트롤러 — 두 폴 루프(프록시 latest 60s·USGS 60s) + stale 재평가 틱.
  *  WorldPage 마운트 시 start, 언마운트 시 stop. React 밖 모듈 — 지도/스토어와 동일 수명. */
@@ -27,32 +32,40 @@ function pollIntervalOf(res: Response): { pollIntervalMs: number } | Record<stri
 
 /** 지역별 참조 안정 병합기 — 컨트롤러 수명 스코프 (리뷰 Med4) */
 const ingestFlights = createFlightSource();
+const ingestWeather = createWeatherSource();
+const ingestNews = createNewsSource();
+
+/** latest.json 1req가 3레이어(flight·weather·news)를 실어나른다 — 상태 전이도 3레이어 공통 */
+const LATEST_LAYERS = ['flight', 'weather', 'news'] as const;
 
 /** 프록시 latest.json 폴 — ETag/304 + X-Poll-Interval 존중 + 429 백오프 (poll-loop 계약) */
 async function pollLatest(etag: string | null): Promise<PollOutcome> {
   const store = useLiveStore.getState();
-  store.setLoading('flight');
+  const failAll = (message: string): void => {
+    for (const layer of LATEST_LAYERS) store.setError(layer, message);
+  };
+  for (const layer of LATEST_LAYERS) store.setLoading(layer);
   let res: Response;
   try {
     res = await fetch(LATEST_URL, {
       headers: etag !== null ? { 'If-None-Match': etag } : {},
     });
   } catch (e: unknown) {
-    store.setError('flight', errorMessage(e));
+    failAll(errorMessage(e));
     return { kind: 'error', reason: errorMessage(e) };
   }
 
   if (res.status === 304) {
-    store.setChecked('flight');
+    for (const layer of LATEST_LAYERS) store.setChecked(layer);
     return { kind: 'notModified', ...pollIntervalOf(res) };
   }
   if (res.status === 429 || res.status >= 500) {
     // 429 재시도 금지 룰 + Error 1027 fail-closed — 지수 백오프 (CLAUDE.md·PLAN §8.6)
-    store.setError('flight', `HTTP ${res.status}`);
+    failAll(`HTTP ${res.status}`);
     return { kind: 'backoff', reason: `HTTP ${res.status}` };
   }
   if (!res.ok) {
-    store.setError('flight', `HTTP ${res.status}`);
+    failAll(`HTTP ${res.status}`);
     return { kind: 'error', reason: `HTTP ${res.status}` };
   }
 
@@ -60,15 +73,27 @@ async function pollLatest(etag: string | null): Promise<PollOutcome> {
   try {
     body = await res.json();
   } catch (e: unknown) {
-    store.setError('flight', 'latest.json 파싱 실패');
+    failAll('latest.json 파싱 실패');
     return { kind: 'error', reason: errorMessage(e) };
   }
-  const snapshot = ingestFlights(body, Date.now());
-  if (snapshot === null) {
-    store.setError('flight', 'latest.json 스키마 불일치');
+
+  // 레이어별 독립 ingest — 부분 실패가 정상 상태 (PLAN §3, 전체 스피너 금지)
+  const now = Date.now();
+  const flights = ingestFlights(body, now);
+  if (flights === null) store.setError('flight', 'latest.json 스키마 불일치');
+  else store.setFlights(flights);
+
+  const weather = ingestWeather(body, now);
+  if (weather === null) store.setError('weather', 'latest.json 스키마 불일치');
+  else store.setWeather(weather);
+
+  const news = ingestNews(body, now);
+  if (news === null) store.setError('news', 'latest.json 스키마 불일치');
+  else store.setNews(news);
+
+  if (flights === null && weather === null && news === null) {
     return { kind: 'error', reason: 'schema' };
   }
-  store.setFlights(snapshot);
   return { kind: 'ok', etag: res.headers.get('ETag'), ...pollIntervalOf(res) };
 }
 

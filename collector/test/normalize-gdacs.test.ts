@@ -70,7 +70,8 @@ describe('normalizeGdacsList — Interval<WeatherAlertPayload> 정규화', () =>
     expect(r!.layer).toBe('weather');
     expect(r!.kind).toBe('interval');
     expect(r!.validFrom).toBe('2026-07-27T00:00:00.000Z');
-    expect(r!.validTo).toBe('2026-08-19T10:00:00.000Z');
+    // GDACS todate는 관측 종료 시각 — 미해제(iscurrent) 경보는 validTo=null (미해제 계약)
+    expect(r!.validTo).toBeNull();
     expect(r!.status).toBe('active');
     expect(r!.revision).toBe(Date.parse('2026-08-19T05:52:41Z'));
     expect(r!.observedAt).toBe('2026-08-19T05:52:41.000Z');
@@ -85,6 +86,7 @@ describe('normalizeGdacsList — Interval<WeatherAlertPayload> 정규화', () =>
       gdacsAlertLevel: 'Orange',
       gdacsEventType: 'TC',
       url: 'https://www.gdacs.org/report.aspx?eventid=1001297&episodeid=55',
+      observedUntil: '2026-08-19T10:00:00.000Z', // 원본 todate 보존
     });
   });
 

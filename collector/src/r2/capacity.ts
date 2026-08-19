@@ -9,7 +9,9 @@ import { putIfAbsent } from './norm';
 
 export const CAPACITY_LIMIT_BYTES = 8 * 1024 ** 3; // 8GB — §8.6 fail-safe 선
 export const SCAN_HOUR_UTC = 3;
-export const SCAN_MINUTE_UTC = 7;
+/** 03:13 — schedule.ts MINUTE_TASKS의 idle 분. 스캔은 전수 LIST라 CPU를 쓰므로
+ *  수집 작업이 없는 분에 앉힌다 (CPU 사다리 rung ①, 2026-08-19 7 → 13). */
+export const SCAN_MINUTE_UTC = 13;
 
 /** 버킷 전체를 덮는 top-level prefix 목록 — 새 top-level 경로 추가 시 여기도 갱신 (§8.6 표와 정렬) */
 const SCAN_PREFIXES = ['raw/', 'norm/', 'agg/', 'pin/', 'manifest/', 'latest.json'] as const;

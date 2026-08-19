@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { normalizeAdsb, pointUrl } from '../src/sources/adsblol';
+import { ADSB_RADIUS_NM, normalizeAdsb, pointUrl } from '../src/sources/adsblol';
 import type { AdsbNormalizeOutcome } from '../src/sources/adsblol';
 import { REGIONS } from '../src/schedule';
 
@@ -100,7 +100,8 @@ describe('adsb.lol 정규화 → Observation<FlightStatePayload> (PLAN §5 ID �
     });
   });
 
-  test('엔드포인트 URL — /v2/point/{lat}/{lon}/250', () => {
-    expect(pointUrl(SEOUL)).toBe('https://api.adsb.lol/v2/point/37.5/127/250');
+  test('엔드포인트 URL — /v2/point/{lat}/{lon}/{ADSB_RADIUS_NM} (CPU 사다리로 150nm)', () => {
+    expect(ADSB_RADIUS_NM).toBe(150);
+    expect(pointUrl(SEOUL)).toBe(`https://api.adsb.lol/v2/point/37.5/127/${ADSB_RADIUS_NM}`);
   });
 });
