@@ -1,16 +1,18 @@
 /** Phase 1 레이어 기계 검증 — 실 API(프록시 latest + USGS)로 4레이어 마커 렌더·픽킹·토글·FPS.
  *  종료 코드 단정: console/page 에러 0, 지진·항공기·기상·뉴스 레코드 수신,
  *  **4레이어 각각의 클릭 픽킹** → sel URL 반영 (재리뷰 Low2 — 이전엔 flight만 눌렀다),
- *  TC 트랙/콘 렌더·픽킹 (모킹 fixture 주입 — 활성 TC가 없는 시각에도 결정론적으로 검증),
+ *  TC 트랙/콘 렌더·픽킹 (maplibre 네이티브 레이어 — 모킹 fixture 주입으로 결정론 검증)
+ *  + 실 GDACS TC가 있으면 그 트랙으로 저고도각 스크린샷,
  *  토글 off → URL l 갱신, fps ≥ 50 (PLAN §10 데스크톱 목표), 스크린샷 갱신 +
- *  TC 트랙 낮은 고도각(pitch) 스크린샷 (스파이크 이관 7 — globe 위 Path billboard 확인).
+ *  TC 트랙 낮은 고도각(pitch) 스크린샷 (스파이크 이관 7 — 지표 밀착 확인,
+ *  docs/spike/RESULT-tc-track.md 채택안 = maplibre 네이티브 line/fill).
  *  주의: WebGL 픽셀 회귀 아님 (CLAUDE.md 테스트 규칙) — DOM/스토어/URL 단정만. */
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 
 const BASE = process.env.LWP_BASE ?? 'http://localhost:5199';
-const OUT_DIR = fileURLToPath(new URL('../../docs/phase0/shots/', import.meta.url));
+const OUT_DIR = fileURLToPath(new URL('../../docs/phase1/shots/', import.meta.url));
 const MIN_FPS = 50; // PLAN §10 데스크톱 목표 (리뷰 Low2 — 30은 회귀 게이트로 약함)
 mkdirSync(OUT_DIR, { recursive: true });
 
@@ -192,7 +194,7 @@ await page.evaluate(() => {
   window.__lwpDeckIds = {
     earthquake: (ids) => ids.filter((id) => id === 'quakes'),
     flight: (ids) => ids.filter((id) => id.startsWith('flights-')),
-    weather: (ids) => ids.filter((id) => id.startsWith('alert-') && id !== 'alert-hatch'),
+    weather: (ids) => ids.filter((id) => id === 'alert-points'),
     news: (ids) => ids.filter((id) => id === 'news'),
   };
 });
@@ -212,6 +214,25 @@ if (layerPicks[layerPicks.length - 1]?.ok) {
   await page.waitForTimeout(400);
   clearedSel = await page.evaluate(() => new URLSearchParams(window.location.search).get('sel'));
   if (clearedSel !== null) failures.push(`빈 곳 클릭 후 선택 해제 실패: sel=${clearedSel}`);
+}
+
+// ── 4b. 실 GDACS TC 트랙 스크린샷 (있을 때만 — 저고도각 지표 밀착 근거) ──
+const realTc = await page.evaluate(() => {
+  const recs = window.__lwpLive.getState().weather.records;
+  const tracks = recs.filter((r) => r.geometry.type === 'LineString');
+  if (tracks.length === 0) return null;
+  const track = tracks[0];
+  const mid = track.geometry.coordinates[Math.floor(track.geometry.coordinates.length / 2)];
+  return { id: track.id, event: track.payload.event, points: track.geometry.coordinates.length, mid };
+});
+if (realTc) {
+  await page.evaluate((c) => window.__lwpMap.jumpTo({ center: c, zoom: 4, pitch: 0 }), realTc.mid);
+  await page.waitForTimeout(2_500);
+  await page.screenshot({ path: `${OUT_DIR}tc-track-real-z4.png` });
+  await page.evaluate((c) => window.__lwpMap.jumpTo({ center: c, zoom: 3.4, pitch: 60 }), realTc.mid);
+  await page.waitForTimeout(2_500);
+  await page.screenshot({ path: `${OUT_DIR}tc-track-low-pitch.png` });
+  await page.evaluate(() => window.__lwpMap.jumpTo({ pitch: 0 }));
 }
 
 // ── 4c. TC 트랙·콘 렌더 + 픽킹 (모킹 fixture — 활성 TC 유무와 무관하게 결정론) ──
@@ -290,8 +311,26 @@ await page.waitForTimeout(1_500);
 const deckLayers = await page.evaluate(() =>
   (window.__lwpDeck?._deck?.props?.layers ?? []).map((l) => l.id),
 );
-for (const id of ['alert-tracks', 'alert-areas', 'alert-hatch']) {
-  if (!deckLayers.includes(id)) failures.push(`deck 레이어 누락: ${id} (있는 것: ${deckLayers.join(',')})`);
+// TC 지오메트리는 maplibre 네이티브 — 레이어 존재 + **실제 렌더된 피처 수**까지 단정한다
+// (레이어만 있고 비어 있으면 실패). 지구 밖 누출은 이 게이트가 보는 지표가 아니다 —
+// 그건 spike/scripts/shoot-tc.mjs의 마스크 밖 픽셀 계측이 담당한다.
+const tcLayers = await page.evaluate(() => {
+  const map = window.__lwpMap;
+  const ids = ['alert-tracks', 'alert-areas', 'alert-areas-outline', 'alert-hatch'];
+  const present = ids.filter((id) => map.getLayer(id) !== undefined);
+  const rendered = {};
+  for (const id of present) rendered[id] = map.queryRenderedFeatures({ layers: [id] }).length;
+  return { present, rendered };
+});
+for (const id of ['alert-tracks', 'alert-areas', 'alert-areas-outline', 'alert-hatch']) {
+  if (!tcLayers.present.includes(id)) {
+    failures.push(`maplibre TC 레이어 누락: ${id} (있는 것: ${tcLayers.present.join(',')})`);
+  } else if ((tcLayers.rendered[id] ?? 0) === 0) {
+    failures.push(`maplibre TC 레이어 ${id} 렌더 피처 0건 (fixture 주입 후인데도 비었다)`);
+  }
+}
+if (deckLayers.includes('alert-tracks') || deckLayers.includes('alert-hatch')) {
+  failures.push(`deck에 TC 선/빗금 레이어가 남아 있다: ${deckLayers.join(',')}`);
 }
 
 /** 트랙 선 위 한 점을 눌러 PathLayer 픽킹까지 확인 */
@@ -308,10 +347,11 @@ const trackPick = await (async () => {
   return sel;
 })();
 
-// 낮은 고도각 — globe 위 Path가 지구 실루엣 밖으로 뜨는지 육안 확인 (스파이크 이관 7)
+// 낮은 고도각 — 트랙/콘이 지구 실루엣 밖으로 뜨는지 육안 확인 (스파이크 이관 7).
+// 실 TC 샷(tc-track-low-pitch.png)은 위 4b에서 이미 찍었다 — 이건 fixture 결정론 샷.
 await page.evaluate(() => window.__lwpMap.jumpTo({ center: [136, 23], zoom: 3.4, pitch: 60 }));
 await page.waitForTimeout(1_500);
-await page.screenshot({ path: `${OUT_DIR}tc-track-low-pitch.png` });
+await page.screenshot({ path: `${OUT_DIR}tc-track-fixture-low-pitch.png` });
 await page.evaluate(() => window.__lwpMap.jumpTo({ pitch: 0, zoom: 4, center: [138, 36] }));
 await page.waitForTimeout(800);
 await page.mouse.click(60, 60); // 선택 해제 (토글 섹션의 URL 단정 오염 방지)
@@ -347,6 +387,8 @@ const report = {
   layerPicks,
   panel: { panelVisible, clearedSel },
   deckLayers,
+  tcLayers,
+  realTc,
   trackPick,
   toggle: { lAfterOff, lAfterOn, camPreserved },
   errors,

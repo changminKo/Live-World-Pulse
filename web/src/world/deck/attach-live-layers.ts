@@ -4,6 +4,7 @@ import type { PickingInfo } from '@deck.gl/core';
 import { useLiveStore } from '../../data/live-store';
 import { useWorldUiStore } from '../../state/world-ui-store';
 import { createLayerBuilder } from './layer-factory';
+import { attachTcGeometry } from '../map/tc-geometry';
 
 /** LIVE 스토어 ↔ deck overlay 연결 — React 리렌더 밖 (지도 조작 경로에서 전역 상태 미독).
  *  rebuild는 스토어 변경·zoomend에서만. 펄스는 rAF로 uniform만 갱신 (탭 숨김·reduced-motion 정지). */
@@ -23,11 +24,19 @@ export function attachLiveLayers(map: maplibregl.Map, overlay: MapboxOverlay): (
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   // 캐시 수명 = 이 attach(=deck overlay) 수명 — Layer 인스턴스는 deck 간 재사용 금지
   const buildLayers = createLayerBuilder();
+  // TC 트랙·콘·빗금은 maplibre 네이티브 (deck globe 투영이 pitch에서 어긋난다 —
+  // tc-geometry.ts 헤더 근거). deck은 마커(점)만 그린다.
+  const tcGeometry = attachTcGeometry(map);
 
   const rebuild = (): void => {
     if (disposed) return;
     const live = useLiveStore.getState();
     const ui = useWorldUiStore.getState();
+    tcGeometry.update({
+      alerts: live.weather.records,
+      enabled: ui.enabled.includes('weather'),
+      selectedId: ui.selectedId,
+    });
     overlay.setProps({
       layers: buildLayers({
         quakes: live.earthquake.records,
@@ -73,7 +82,11 @@ export function attachLiveLayers(map: maplibregl.Map, overlay: MapboxOverlay): (
       y: e.point.y,
       radius: 6,
     });
-    const picked = (info?.object as { id?: string } | undefined)?.id ?? null;
+    // deck(마커) 우선 — 마커가 트랙/콘 위에 그려지므로 픽 순서도 같아야 한다.
+    // deck이 비면 maplibre 네이티브 TC 지오메트리에 물어본다.
+    const picked =
+      (info?.object as { id?: string } | undefined)?.id ??
+      tcGeometry.pick({ x: e.point.x, y: e.point.y });
     useWorldUiStore.getState().select(picked);
   };
   map.on('click', onClick);
@@ -94,6 +107,7 @@ export function attachLiveLayers(map: maplibregl.Map, overlay: MapboxOverlay): (
     unsubUi();
     map.off('zoomend', rebuild);
     map.off('click', onClick);
+    tcGeometry.dispose();
     document.removeEventListener('visibilitychange', onVisibility);
     reducedMotion.removeEventListener('change', rebuild);
   };

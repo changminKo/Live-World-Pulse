@@ -1,4 +1,4 @@
-import { GeoJsonLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { ScatterplotLayer } from '@deck.gl/layers';
 import { SimpleMeshLayer } from '@deck.gl/mesh-layers';
 import type { Layer } from '@deck.gl/core';
 import type {
@@ -6,14 +6,12 @@ import type {
   FlightRecord,
   LayerId,
   NewsRecord,
-  Position,
   SeverityRank,
   WeatherAlertRecord,
 } from '@lwp/shared';
 import type { QuakeArrival } from '../../data/live-store';
 import type { FlightRegionSlice } from '../../data/latest-source';
 import { FLIGHT_MESH } from './flight-mesh';
-import { hatchPolygon } from './hatch';
 import { SQUARE_FRAME_MESH, SQUARE_MESH } from './square-mesh';
 
 /** deck 레이어 팩토리 — DESIGN §2.1(shape 1차 식별자)·§2.2(rank 색·크기 이중 인코딩).
@@ -49,10 +47,6 @@ const RANK_SIZE_MUL: Record<SeverityRank, number> = { 0: 1.0, 1: 1.15, 2: 1.3, 3
 /** DESIGN --layer-flight #4cc9f0 */
 const FLIGHT_RGB: [number, number, number] = [76, 201, 240];
 const SELECTED_RGB: [number, number, number, number] = [255, 255, 255, 255];
-/** 경보 폴리곤 채움 알파 (낮게 — 아래 지도가 비쳐야 함) */
-const ALERT_FILL_ALPHA = 45;
-/** 빗금 알파 — 채움보다 진하게(형태를 읽히게), 마커보다 연하게 */
-const ALERT_HATCH_ALPHA = 110;
 
 const quakeRadiusPx = (d: EarthquakeRecord): number => {
   const mag = d.payload.magnitude ?? 1;
@@ -87,55 +81,11 @@ const alertPointScaleOf = (d: WeatherAlertRecord): [number, number, number] => {
   return [s, s, 1];
 };
 
-/** GeoJsonLayer 픽킹 계약 — attach가 info.object.id를 읽으므로 Feature 루트에 id 부착 */
-interface AlertFeature {
-  type: 'Feature';
-  id: string;
-  geometry: WeatherAlertRecord['geometry'];
-  properties: { rank: SeverityRank };
-}
-
-/** 빗금 한 줄 — PathLayer data (rank는 색, 폴리곤 id는 픽킹 제외용으로 보관하지 않는다:
- *  빗금은 장식이라 pickable=false다) */
-interface HatchLine {
-  path: Position[];
-  rank: SeverityRank;
-}
-
-/** 기상 경보 지오메트리 3분할 — 폴리곤(면)·트랙(LineString)·점 폴백 (DESIGN §2.1)
- *  + 폴리곤에서 파생한 빗금선 (재리뷰 Low1) */
-interface WeatherSplit {
-  polygons: AlertFeature[];
-  hatch: HatchLine[];
-  tracks: WeatherAlertRecord[];
-  points: WeatherAlertRecord[];
-}
-
-function splitWeather(records: WeatherAlertRecord[]): WeatherSplit {
-  const polygons: AlertFeature[] = [];
-  const hatch: HatchLine[] = [];
-  const tracks: WeatherAlertRecord[] = [];
-  const points: WeatherAlertRecord[] = [];
-  for (const r of records) {
-    if (r.geometry.type === 'Polygon' || r.geometry.type === 'MultiPolygon') {
-      polygons.push({
-        type: 'Feature',
-        id: r.id,
-        geometry: r.geometry,
-        properties: { rank: r.severity.rank },
-      });
-      const ringSets: Position[][][] =
-        r.geometry.type === 'Polygon' ? [r.geometry.coordinates] : r.geometry.coordinates;
-      for (const rings of ringSets) {
-        for (const path of hatchPolygon(rings)) hatch.push({ path, rank: r.severity.rank });
-      }
-    } else if (r.geometry.type === 'LineString') {
-      tracks.push(r);
-    } else {
-      points.push(r);
-    }
-  }
-  return { polygons, hatch, tracks, points };
+/** 기상 경보 중 **점 마커만** deck이 그린다 — 선(TC 트랙)·면(예보 콘)·빗금은
+ *  maplibre 네이티브 레이어다 (world/map/tc-geometry.ts 헤더 근거: globe에서 deck
+ *  overlaid 투영이 pitch 하에 최대 59px+ 어긋나고 수평선 너머를 클리핑하지 않는다). */
+function weatherPoints(records: WeatherAlertRecord[]): WeatherAlertRecord[] {
+  return records.filter((r) => r.geometry.type === 'Point');
 }
 
 export interface BuildLayersInput {
@@ -197,12 +147,17 @@ export function createLayerBuilder(): LayerBuilder {
   };
 
   /** 지오메트리 3분할 캐시 — records 참조가 같으면(사이클 무변경) 재분할 금지 */
-  let weatherSplitCache: { records: WeatherAlertRecord[]; split: WeatherSplit } | null = null;
-  const weatherSplitOf = (records: WeatherAlertRecord[]): WeatherSplit => {
-    if (weatherSplitCache && weatherSplitCache.records === records) return weatherSplitCache.split;
-    const split = splitWeather(records);
-    weatherSplitCache = { records, split };
-    return split;
+  // 참조 안정성 — 같은 레코드 배열이면 같은 points 배열을 돌려줘야 deck이 attribute를
+  // 재계산하지 않는다 (매 펄스 프레임 rebuild가 돈다)
+  let weatherPointsCache: { records: WeatherAlertRecord[]; points: WeatherAlertRecord[] } | null =
+    null;
+  const weatherPointsOf = (records: WeatherAlertRecord[]): WeatherAlertRecord[] => {
+    if (weatherPointsCache && weatherPointsCache.records === records) {
+      return weatherPointsCache.points;
+    }
+    const points = weatherPoints(records);
+    weatherPointsCache = { records, points };
+    return points;
   };
 
   return function buildLayers(input: BuildLayersInput): Layer[] {
@@ -214,83 +169,7 @@ export function createLayerBuilder(): LayerBuilder {
 
     // ── 기상 경보 — 면(폴리곤)이 마커 아래 깔리도록 최하단 배치 (DESIGN §2.1) ──
     if (weatherOn && input.alerts.length > 0) {
-      const { polygons, hatch, tracks, points } = weatherSplitOf(input.alerts);
-
-      if (polygons.length > 0) {
-        layers.push(
-          memoLayer('alert-areas', [polygons, input.selectedId], () =>
-            new GeoJsonLayer<AlertFeature['properties']>({
-              id: 'alert-areas',
-              // shared Geometry는 라벨드 튜플 Position이라 GeoJSON.Position(number[])과
-              // 명목상 불일치 — 런타임 형상은 동일 (GeoJSON 순서 [lon, lat] 계약)
-              data: polygons as unknown as GeoJSON.Feature[],
-              pickable: true,
-              stroked: true,
-              filled: true,
-              lineWidthUnits: 'pixels',
-              getFillColor: (f) => [...ALERT_RANK_RGB[f.properties.rank], ALERT_FILL_ALPHA],
-              getLineColor: (f) => {
-                const feature = f as unknown as AlertFeature;
-                return feature.id === input.selectedId
-                  ? SELECTED_RGB
-                  : [...ALERT_RANK_RGB[f.properties.rank], 220];
-              },
-              getLineWidth: 1.5,
-              updateTriggers: { getLineColor: input.selectedId },
-            }),
-          ),
-        );
-      }
-
-      // 빗금 — 폴리곤 면 위, 마커 아래. 장식이라 pickable=false (픽킹은 폴리곤 본체가 받는다).
-      // billboard: globe에서 선 리본이 지표를 벗어나 보이는 문제의 회피책 (아래 트랙 주석 참조).
-      if (hatch.length > 0) {
-        layers.push(
-          memoLayer('alert-hatch', [hatch], () =>
-            new PathLayer<HatchLine>({
-              id: 'alert-hatch',
-              data: hatch,
-              pickable: false,
-              billboard: true,
-              widthUnits: 'pixels',
-              getPath: (d) => d.path as unknown as number[],
-              getColor: (d) => [...ALERT_RANK_RGB[d.rank], ALERT_HATCH_ALPHA],
-              getWidth: 1,
-            }),
-          ),
-        );
-      }
-
-      // TC 트랙 — 위치 연속(태풍 중심 경로)만 선 표현 (이산 이벤트 보간 금지와 무관).
-      //
-      // 스파이크 이관 7 결론 (2026-08-19): globe 위 PathLayer의 기본 압출은 **지표면
-      // 접평면**에서 일어나므로, 낮은 고도각에서 리본이 지구 실루엣 밖으로 떠 보인다.
-      // `billboard: true`로 두면 압출이 스크린 공간(카메라를 향함)에서 일어나 선이 항상
-      // 지표에 붙어 보인다. GreatCircleLayer는 @deck.gl/geo-layers 추가 의존이고
-      // 좌표 세분화(subdivision)는 원인이 chord sag가 아니라 압출면이므로 효과가 없다
-      // — 그래서 billboard가 답이다 (verify:layers의 저pitch 스크린샷으로 확인).
-      if (tracks.length > 0) {
-        layers.push(
-          memoLayer('alert-tracks', [tracks, input.selectedId], () =>
-            new PathLayer<WeatherAlertRecord>({
-              id: 'alert-tracks',
-              data: tracks,
-              pickable: true,
-              billboard: true,
-              widthUnits: 'pixels',
-              // PathGeometry 선언은 flat number[]지만 런타임은 [[lon,lat],...] 중첩도 수용
-              getPath: (d) =>
-                (d.geometry.type === 'LineString'
-                  ? d.geometry.coordinates
-                  : []) as unknown as number[],
-              getColor: (d) =>
-                d.id === input.selectedId ? SELECTED_RGB : ALERT_RANK_RGB[d.severity.rank],
-              getWidth: 2.5,
-              updateTriggers: { getColor: input.selectedId },
-            }),
-          ),
-        );
-      }
+      const points = weatherPointsOf(input.alerts);
 
       // Point 지오메트리 폴백 — 사각 테두리 마커 (원+빗금 불가 — DESIGN §2.1 shape 계약)
       if (points.length > 0) {

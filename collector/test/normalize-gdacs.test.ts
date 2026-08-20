@@ -256,6 +256,98 @@ describe('buildTcTrack — 트랙포인트 Polygon → centroid → LineString (
   });
 });
 
+describe('ringCentroid — ±180을 걸친 트랙포인트 ring (사후 리뷰 High)', () => {
+  /** 실제 GDACS 트랙포인트는 중심점이 아니라 **소형 Polygon ring**으로 온다.
+   *  날짜변경선 위 TC라면 그 ring의 정점 경도가 179.x와 −179.x로 섞인다 —
+   *  산술평균은 여기서 약 0°(아프리카 앞바다)로 튀고, 그 오차는 소비 측 언랩으로
+   *  복구되지 않는다(점 자체가 이미 틀린 자리). 구면 평균이라야 ±180 근처로 남는다. */
+  function straddlingRing(index: number, lat: number) {
+    return {
+      properties: { Class: `Point_Polygon_Point_${index}` },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [179.5, lat - 0.1],
+            [-179.5, lat - 0.1],
+            [-179.5, lat + 0.1],
+            [179.5, lat + 0.1],
+            [179.5, lat - 0.1],
+          ],
+        ],
+      },
+    };
+  }
+
+  test('경도 179.5·−179.5 혼재 ring → 중심은 ±180 근처 (0도로 튀지 않는다)', () => {
+    const { track } = buildTcTrack({
+      features: [straddlingRing(0, 20), straddlingRing(1, 22)],
+    });
+
+    expect(track?.coordinates).toHaveLength(2);
+    expect(track!.coordinates.map(([, lat]) => lat)).toEqual([
+      expect.closeTo(20, 6),
+      expect.closeTo(22, 6),
+    ]);
+    for (const [lon] of track!.coordinates) {
+      expect(Math.abs(Math.abs(lon) - 180)).toBeLessThan(0.01); // 180 또는 −180
+    }
+  });
+
+  test('실 트랙 형태: 날짜변경선 양쪽 트랙포인트가 반구를 가로지르지 않는다', () => {
+    const { track } = buildTcTrack({
+      features: [
+        trackPointRing(0, 176, 15),
+        straddlingRing(1, 17),
+        trackPointRing(2, -176, 19),
+      ],
+    });
+
+    const lons = track!.coordinates.map(([lon]) => lon);
+    // 인접 점의 경도 차(언랩 후)가 반구를 넘으면 안 된다 — 산술평균 버그면 176→0→−176
+    const unwrapped = lons.map((lon, i) => {
+      let out = lon;
+      const prev = i === 0 ? lon : lons[i - 1]!;
+      while (out - prev > 180) out -= 360;
+      while (out - prev < -180) out += 360;
+      return out;
+    });
+    for (let i = 1; i < unwrapped.length; i += 1) {
+      expect(Math.abs(unwrapped[i]! - unwrapped[i - 1]!)).toBeLessThan(10);
+    }
+  });
+
+  test('극지 ±85 이상 트랙포인트도 좌표 유효 범위를 지킨다', () => {
+    const { track } = buildTcTrack({
+      features: [trackPointRing(0, 30, 87), trackPointRing(1, 150, -88)],
+    });
+    expect(track?.coordinates).toEqual([
+      [expect.closeTo(30, 6), expect.closeTo(87, 6)],
+      [expect.closeTo(150, 6), expect.closeTo(-88, 6)],
+    ]);
+  });
+});
+
+/** 일반(날짜변경선 밖) 트랙포인트 ring — 위 describe 전용 헬퍼 */
+function trackPointRing(index: number, lon: number, lat: number) {
+  const d = 0.1;
+  return {
+    properties: { Class: `Point_Polygon_Point_${index}` },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [lon - d, lat - d],
+          [lon + d, lat - d],
+          [lon + d, lat + d],
+          [lon - d, lat + d],
+          [lon - d, lat - d],
+        ],
+      ],
+    },
+  };
+}
+
 describe('applyTcGeometry — 트랙 캐시 합성 + 콘 파생 레코드', () => {
   function record(): WeatherAlertRecord {
     const [rec] = (normalizeGdacsList({ features: [feature()] }, NOW) as { records: WeatherAlertRecord[] }).records;

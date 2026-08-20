@@ -1,7 +1,7 @@
 # Live World Pulse
 
 전 세계 실시간 이벤트(지진·기상·항공기·뉴스)를 3D 지구본 + 타임라인으로 탐색하는 데이터 시각화 서비스.
-현재 단계: **Phase 1 진행 중 — 4레이어(지진·항공기·기상·뉴스) 라이브 완료 + TC 트랙·콘 지오메트리. 남은 것: Timeline, 룰 기반 상관, Nearby Events** — 공개 URL https://live-world-pulse.pages.dev, Collector 가동 중 (분→작업 1개 + weather 페이지 1장/슬롯, exceededCpu 0. news-process만 10ms 초과 잔존 — PLAN §8.7) — Collector 가동 중 (lwp-collector.rhckdals123.workers.dev), 공유 계약 = `shared/` (타입·temporalMode·R2 스키마·URL 직렬화 — 기존 필드 변경 금지, 추가는 optional만). 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 8~9(7은 2026-08-19 해소 — globe Path billboard), GATE_TOKEN·HEALTHCHECKS_URL 시크릿(사용자). (Phase 전환 시 이 줄을 갱신할 것)
+현재 단계: **Phase 1 진행 중 — 4레이어(지진·항공기·기상·뉴스) 라이브 완료 + TC 트랙·콘 지오메트리. 남은 것: Timeline, 룰 기반 상관, Nearby Events** — 공개 URL https://live-world-pulse.pages.dev, Collector 가동 중 (분→작업 1개 + weather 페이지 1장/슬롯, exceededCpu 0. news-process만 10ms 초과 잔존 — PLAN §8.7) — Collector 가동 중 (lwp-collector.rhckdals123.workers.dev), 공유 계약 = `shared/` (타입·temporalMode·R2 스키마·URL 직렬화 — 기존 필드 변경 금지, 추가는 optional만). 이월 미완: 디자인 방향 1페이지(Phase 0 전 필수), RESULT §이관 8~9(7은 2026-08-20 해소 — TC 선·면은 maplibre 네이티브 레이어. 2026-08-19의 'globe Path billboard로 해소' 기록은 오판이었고 `docs/spike/RESULT-tc-track.md`가 정정), TC 트랙 슬롯 프로덕션 cpuTime 미실측(wrangler 인증 만료), GATE_TOKEN·HEALTHCHECKS_URL 시크릿(사용자). (Phase 전환 시 이 줄을 갱신할 것)
 마스터 계획: `docs/PLAN.md` (검토 리포트: `docs/review/`). 아래 규칙과 충돌 시 PLAN.md가 우선.
 
 ## 기술 스택 (확정 — 변경 금지)
@@ -46,7 +46,7 @@
 
 - URL 갱신에 **pushState 금지** — `replaceState` + 디바운스만
 - 이산 이벤트(지진·뉴스) **보간 금지** — 위치 연속인 것(항공기·태풍 트랙)만 보간
-- globe 위 **선 레이어(PathLayer)는 `billboard: true` 고정** — 기본 압출은 지표 접평면이라 저고도각에서 리본이 지구 실루엣 밖으로 뜬다 (스파이크 이관 7 해소, 2026-08-19)
+- globe 위 **선·면 지오메트리(TC 트랙·예보 콘·빗금)는 deck 금지 — maplibre 네이티브 line/fill 레이어**(`web/src/world/map/tc-geometry.ts`). deck overlaid의 globe 투영은 pitch 0에선 maplibre와 ≤1px로 일치하지만 pitch를 주면 수평선 부근 정점이 59px+ 어긋나고 수평선 너머를 클리핑하지 않아 선이 지구 밖 허공으로 뻗는다. `billboard: true`·대권 subdivision·GreatCircleLayer·클라이언트 컬링 전부 실패(선 후보 7종 픽셀 계측 — 이전 2026-08-19의 "billboard로 해소" 기록은 fixture 한계로 인한 오판이었다). 콘 채움·빗금도 따로 계측했다 — 콘이 수평선 쪽에 놓이는 pose에서 deck는 픽셀 100%가 지구 밖, 네이티브는 0%. 판정표·재현 = `docs/spike/RESULT-tc-track.md` (스파이크 이관 7 해소, 2026-08-20). deck은 **점 마커 전용**
 - **비TC 경보의 영역 폴리곤 수집 금지** — GDACS getgeometry는 이벤트당 1콜이라 활성 400여 건이면 400콜 ($0·10ms 예산 밖). 폴리곤/트랙은 **TC 한정**이고 그 밖은 Point다 (백로그 — PLAN §4.2). "폴리곤 구현" 주장을 TC 콘 범위 밖으로 넓히지 말 것
 
 ## 데이터 모델 계약 (PLAN §5)

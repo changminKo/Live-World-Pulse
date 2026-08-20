@@ -1,0 +1,568 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "results": [
+    {
+      "pose": "globe",
+      "cand": "path",
+      "discPx": 142620,
+      "linePx": 655,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "globe",
+      "cand": "gc",
+      "discPx": 142620,
+      "linePx": 65,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "globe",
+      "cand": "subdiv",
+      "discPx": 142620,
+      "linePx": 657,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 167
+    },
+    {
+      "pose": "globe",
+      "cand": "billboard",
+      "discPx": 142620,
+      "linePx": 1229,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "globe",
+      "cand": "cull",
+      "discPx": 142620,
+      "linePx": 1229,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "globe",
+      "cand": "cull2",
+      "discPx": 142620,
+      "linePx": 1229,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "globe",
+      "cand": "maplibre",
+      "discPx": 142620,
+      "linePx": 676,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "zoom",
+      "cand": "path",
+      "discPx": 1024000,
+      "linePx": 2715,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "zoom",
+      "cand": "gc",
+      "discPx": 1024000,
+      "linePx": 34,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "zoom",
+      "cand": "subdiv",
+      "discPx": 1024000,
+      "linePx": 2720,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 167
+    },
+    {
+      "pose": "zoom",
+      "cand": "billboard",
+      "discPx": 1024000,
+      "linePx": 4448,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "zoom",
+      "cand": "cull",
+      "discPx": 1024000,
+      "linePx": 4448,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "zoom",
+      "cand": "cull2",
+      "discPx": 1024000,
+      "linePx": 4448,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "zoom",
+      "cand": "maplibre",
+      "discPx": 1024000,
+      "linePx": 2835,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "path",
+      "discPx": 493388,
+      "linePx": 1977,
+      "outsidePx": 389,
+      "outsidePct": 19.68,
+      "trackPts": 52
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "gc",
+      "discPx": 493388,
+      "linePx": 38,
+      "outsidePx": 4,
+      "outsidePct": 10.53,
+      "trackPts": 52
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "subdiv",
+      "discPx": 493388,
+      "linePx": 1981,
+      "outsidePx": 392,
+      "outsidePct": 19.79,
+      "trackPts": 167
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "billboard",
+      "discPx": 493388,
+      "linePx": 4206,
+      "outsidePx": 1679,
+      "outsidePct": 39.92,
+      "trackPts": 52
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "cull",
+      "discPx": 493388,
+      "linePx": 3613,
+      "outsidePx": 1086,
+      "outsidePct": 30.06,
+      "trackPts": 52
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "cull2",
+      "discPx": 493388,
+      "linePx": 3723,
+      "outsidePx": 1196,
+      "outsidePct": 32.12,
+      "trackPts": 52
+    },
+    {
+      "pose": "lowpitch",
+      "cand": "maplibre",
+      "discPx": 493388,
+      "linePx": 1070,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "back",
+      "cand": "path",
+      "discPx": 142620,
+      "linePx": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "back",
+      "cand": "gc",
+      "discPx": 142620,
+      "linePx": 7,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "back",
+      "cand": "subdiv",
+      "discPx": 142620,
+      "linePx": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 167
+    },
+    {
+      "pose": "back",
+      "cand": "billboard",
+      "discPx": 142620,
+      "linePx": 778,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "back",
+      "cand": "cull",
+      "discPx": 142620,
+      "linePx": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "back",
+      "cand": "cull2",
+      "discPx": 142620,
+      "linePx": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    },
+    {
+      "pose": "back",
+      "cand": "maplibre",
+      "discPx": 142620,
+      "linePx": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "trackPts": 52
+    }
+  ],
+  "areaResults": [
+    {
+      "pose": "cglobe",
+      "engine": "deck",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 1260,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cglobe",
+      "engine": "deck",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 243,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cglobe",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 1370,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cglobe",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 288,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "czoom",
+      "engine": "deck",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 1024000,
+      "px": 40180,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "czoom",
+      "engine": "deck",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 1024000,
+      "px": 1377,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "czoom",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 1024000,
+      "px": 40778,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "czoom",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 1024000,
+      "px": 1563,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "clowpitch",
+      "engine": "deck",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 487888,
+      "px": 17617,
+      "outsidePx": 15,
+      "outsidePct": 0.09,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "clowpitch",
+      "engine": "deck",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 487888,
+      "px": 918,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "clowpitch",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 487888,
+      "px": 9897,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "clowpitch",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 487888,
+      "px": 498,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "chorizon",
+      "engine": "deck",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 469405,
+      "px": 10872,
+      "outsidePx": 10872,
+      "outsidePct": 100,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "chorizon",
+      "engine": "deck",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 469405,
+      "px": 553,
+      "outsidePx": 553,
+      "outsidePct": 100,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "chorizon",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 469405,
+      "px": 1565,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "chorizon",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 469405,
+      "px": 48,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cedge",
+      "engine": "deck",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 312813,
+      "px": 3613,
+      "outsidePx": 3613,
+      "outsidePct": 100,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cedge",
+      "engine": "deck",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 312813,
+      "px": 392,
+      "outsidePx": 392,
+      "outsidePct": 100,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cedge",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 312813,
+      "px": 1788,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cedge",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 312813,
+      "px": 175,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cback",
+      "engine": "deck",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cback",
+      "engine": "deck",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cback",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "cback",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "plain",
+      "discPx": 137200,
+      "px": 0,
+      "outsidePx": 0,
+      "outsidePct": 0,
+      "hatchSegs": 12
+    },
+    {
+      "pose": "chorizon",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "subdiv",
+      "discPx": 469405,
+      "px": 1566,
+      "outsidePx": 0,
+      "outsidePct": 0
+    },
+    {
+      "pose": "chorizon",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "subdiv",
+      "discPx": 469405,
+      "px": 48,
+      "outsidePx": 0,
+      "outsidePct": 0
+    },
+    {
+      "pose": "cedge",
+      "engine": "native",
+      "measure": "fill",
+      "poly": "subdiv",
+      "discPx": 312813,
+      "px": 1788,
+      "outsidePx": 0,
+      "outsidePct": 0
+    },
+    {
+      "pose": "cedge",
+      "engine": "native",
+      "measure": "hatch",
+      "poly": "subdiv",
+      "discPx": 312813,
+      "px": 174,
+      "outsidePx": 0,
+      "outsidePct": 0
+    }
+  ],
+  "errors": [],
+  "outDir": "/Users/doyle/orca/projects/Live-World-Pulse/docs/phase1/shots/candidates/"
+}

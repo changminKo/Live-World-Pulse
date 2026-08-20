@@ -612,8 +612,9 @@ dev 오버레이 (FPS·객체 수·attribute 생성 시간·워커 큐)를 30분
 
 | 리스크 | 확률 | 대응 |
 |---|---|---|
-| **TC 트랙·폴리곤 렌더 미구현** (globe 위 Path가 지구 외곽으로 뜸 — 스파이크 이관 7 미확정 항목이 실제로 발현) | 중 | 현재 경보는 전부 Point 마커. GreatCircleLayer·좌표 subdivision 시도 or 2D 인셋으로 대안 검토 (Phase 1 잔여) |
-| ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정 (기준 1·2·3·6 통과 + 기준 5 스냅샷 기준 통과, 기준 4는 5/6 O + 미확정 1 — 규칙 1 준용). 미확정·미시험 3건은 Phase 0 이관 (RESULT §이관 7~9 — **7(globe 위 Path 지표 관통)은 2026-08-19 해소: PathLayer `billboard: true`**, 8·9는 이월). docs/spike/RESULT.md |
+| ~~**TC 트랙·폴리곤 렌더 미구현**~~ | 해소 | ✅ 2026-08-20 — 선 후보 7종 + 콘 채움·빗금 픽셀 계측 후 **maplibre 네이티브 line/fill** 채택(선·면·빗금 모두 지구 밖 픽셀 0. 같은 pose에서 deck 채움·빗금은 100%가 지구 밖). deck PathLayer(기본·billboard)·대권 subdivision·GreatCircleLayer·클라이언트 컬링은 전부 실패. `docs/spike/RESULT-tc-track.md` |
+| **deck 마커의 pitch 투영 오차** (globe에서 pitch>0이면 화면 가장자리 deck 지오메트리가 어긋난다 — 실측 pitch 60·z3.4에서 59px+, pitch 0에선 ≤1px) | 중 | 선·면은 maplibre 네이티브로 이관해 해소. **점 마커는 미해결** — 선택지 (a) pitch 제한 (b) 마커도 네이티브 이관 (c) 수용+문서화. 기본 경로(pitch 0, URL에 pitch 미포함)에는 영향 없음 |
+| ~~globe 렌더 버그로 엔진 변경~~ | 해소 | ✅ Phase -1 완료 (2026-08-18) — A(maplibre 5.24 + overlaid) 확정 (기준 1·2·3·6 통과 + 기준 5 스냅샷 기준 통과, 기준 4는 5/6 O + 미확정 1 — 규칙 1 준용). 미확정·미시험 3건은 Phase 0 이관 (RESULT §이관 7~9 — **7(globe 위 Path 지표 관통)은 2026-08-20 해소: 선·면을 maplibre 네이티브 레이어로 (2026-08-19의 `billboard` 결론은 오판 — RESULT-tc-track.md)**, 8·9는 이월). docs/spike/RESULT.md |
 | ~~adsb.lol 커버리지/덤프 부실~~ | 해소 | ✅ 실측 완료 — 채택 유효. 단 동아시아 커버 유럽의 1/8 (UI 정직 표기로 대응) |
 | ~~GDACS 스펙이 기대와 다름~~ | 해소 | ✅ 실측 완료 — 채택 유효, 태풍 데모 성립 |
 | Collector 장애로 히스토리 구멍 | 상 | manifest 갭 원장 + healthchecks + UI 정직 표시 (구멍 자체를 기능으로) |

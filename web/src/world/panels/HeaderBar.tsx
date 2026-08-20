@@ -5,13 +5,18 @@ const formatUtc = (epochMs: number): string =>
 
 /** 데이터 파이프라인 상태 (CLAUDE.md 표기 계약)
  *  - live: 최신 가용 스냅샷 표시 중 (● LIVE)
- *  - stale: 6분(항공기 2주기) 무갱신 (◐ 지연)
+ *  - stale: 레이어별 tolerance 초과 무갱신 (◐ 지연) — 지진 6분·항공기 20분·뉴스 30분·기상 120분
+ *    (live-store LAYER_STALE_MS = collector 주기 × 2주기)
  *  - standby: 데이터 레이어 미연결 — LIVE 허위 주장 금지 (○ STANDBY) */
 export type PulseStatus = 'live' | 'stale' | 'standby';
 
 const STATUS_BADGE: Record<PulseStatus, { text: string; color: string; title: string }> = {
   live: { text: '● LIVE', color: 'var(--status-live)', title: '최신 가용 스냅샷 표시 중' },
-  stale: { text: '◐ 지연', color: 'var(--status-stale)', title: '6분 이상 무갱신 — 지연 상태' },
+  stale: {
+    text: '◐ 지연',
+    color: 'var(--status-stale)',
+    title: '레이어별 수집 주기 2배 이상 무갱신 — 지연 상태',
+  },
   standby: {
     text: '○ STANDBY',
     color: 'var(--text-lo)',

@@ -14,7 +14,8 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail --format json",
     "bench:cpu": "esbuild bench/slot-cpu.ts --bundle --platform=node --format=esm --alias:@lwp/shared=../shared/src/index.ts --external:node:* --external:fflate --outfile=.bench/slot-cpu.mjs --log-level=warning && node .bench/slot-cpu.mjs",
-    "bench:news": "esbuild bench/news-phases.ts --bundle --platform=node --format=esm --alias:@lwp/shared=../shared/src/index.ts --external:node:* --external:fflate --outfile=.bench/news-phases.mjs --log-level=warning && node .bench/news-phases.mjs"
+    "bench:news": "esbuild bench/news-phases.ts --bundle --platform=node --format=esm --alias:@lwp/shared=../shared/src/index.ts --external:node:* --external:fflate --outfile=.bench/news-phases.mjs --log-level=warning && node .bench/news-phases.mjs",
+    "bench:tcgeom": "esbuild bench/tc-geom-cpu.ts --bundle --platform=node --format=esm --alias:@lwp/shared=../shared/src/index.ts --external:node:* --external:fflate --outfile=.bench/tc-geom.mjs --log-level=warning && node .bench/tc-geom.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260818.1",

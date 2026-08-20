@@ -48,6 +48,8 @@ web/scripts/verify-layers.mjs  기계 검증 (npm run verify:layers)
 - console/page 에러 0, typecheck·build 통과, 기존 verify:globe 회귀 통과 (URL 계약·랜딩 번들 누수 0)
 - 스크린샷: `docs/phase0/shots/globe-full-z1.5.png` (동아시아 z1.5) ·
   `docs/phase0/shots/globe-zoom-z4.png` (일본 z4 — 도쿄 지역 항공기 삼각 메시 + heading 회전)
+  — **이 파일들은 2026-08-19 시점 스냅샷이다.** 2026-08-20부터 `verify:layers`의 출력 경로는
+  `docs/phase1/shots/`로 옮겼다 (TC 트랙 채택안 교체 — `docs/spike/RESULT-tc-track.md`).
 
 ## 하드 룰 체크
 

@@ -190,16 +190,32 @@ export interface TcGeometry extends TcTrack {
   cone: { type: 'Polygon'; coordinates: Position[][] } | null;
 }
 
-/** 소형 Polygon ring 평균 centroid (마지막 닫힘 중복점 제거) — 시각 표시용 근사 */
+/** 경도 산술평균이 0으로 붕괴하는 경계 — 정반대 방향 벡터가 상쇄된 상태 */
+const LON_MEAN_EPS = 1e-9;
+const DEG = Math.PI / 180;
+
+/** 소형 Polygon ring 평균 centroid (마지막 닫힘 중복점 제거) — 시각 표시용 근사.
+ *  경도는 **구면 평균**이다: 각도를 단위벡터(cos/sin)로 바꿔 평균한 뒤 atan2로 복원한다.
+ *  산술평균을 쓰면 ±180을 걸친 ring(예: 179.5와 −179.5)이 약 0도 — 지구 반대편 —
+ *  으로 튀고, 그 오차가 트랙 LineString에 그대로 실려 소비 측 언랩으로도 복구되지 않는다.
+ *  위도는 극 근처 왜곡이 작고 wrap이 없어 산술평균 유지. */
 function ringCentroid(ring: unknown): [number, number] | null {
   if (!Array.isArray(ring) || ring.length < 3) return null;
   const pts = ring.slice(0, -1).filter(
     (c): c is [number, number] =>
       Array.isArray(c) && typeof c[0] === 'number' && typeof c[1] === 'number',
   );
-  if (pts.length === 0) return null;
-  const lon = pts.reduce((s, c) => s + c[0], 0) / pts.length;
+  const first = pts[0];
+  if (first === undefined) return null;
   const lat = pts.reduce((s, c) => s + c[1], 0) / pts.length;
+  let x = 0;
+  let y = 0;
+  for (const [lonDeg] of pts) {
+    x += Math.cos(lonDeg * DEG);
+    y += Math.sin(lonDeg * DEG);
+  }
+  // 벡터 합이 0에 가까우면 방향이 정의되지 않는다(정반대 점들이 상쇄) → 첫 점 경도 사용
+  const lon = Math.hypot(x, y) < LON_MEAN_EPS ? first[0] : Math.atan2(y, x) / DEG;
   return validateLonLat(lon, lat);
 }
 
