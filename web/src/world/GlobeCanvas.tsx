@@ -6,6 +6,7 @@ import { useViewportStore } from '../state/viewport-store';
 import { cancelUrlUpdate, readInitialCamera, scheduleUrlUpdate } from '../state/url-sync';
 import { debounceTrailing } from '../lib/debounce';
 import { attachLiveLayers } from './deck/attach-live-layers';
+import { addGraticule, applySurfaceContrast } from './map/surface-contrast';
 
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/dark'; // 키 불요 (PLAN §8.2 실측 확정)
 
@@ -36,6 +37,10 @@ function initGlobe(container: HTMLDivElement): () => void {
     map.setSky({
       'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
     });
+    // 표면 대비 계약 (DESIGN §2.3): 기본 스타일은 육지가 우주 배경과 동일색(rgb 12,12,12) —
+    // 런타임 오버라이드로 표면 luma 34~40 확보 + 30° 그라티큘
+    applySurfaceContrast(map);
+    addGraticule(map);
   });
 
   map.on('error', (e) => {

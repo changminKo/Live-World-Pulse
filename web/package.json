@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "verify:globe": "node scripts/verify-globe.mjs",
     "verify:layers": "node scripts/verify-layers.mjs",
+    "verify:contrast": "node scripts/verify-contrast.mjs",
     "test": "vitest run"
   },
   "dependencies": {
