@@ -222,3 +222,36 @@ node scripts/arc-check.mjs       # GreatCircleLayer/ArcLayer 렌더 여부 재�
 #     &measure=none|fill|hatch # 계측 격리(불투명 마젠타, 선 끔)
 #     &at=lon,lat&z=&p=&b=     # pose 대신 임의 카메라 (탐색용)
 ```
+
+## 프로덕션 CPU 실측 (2026-08-21 12:27~13:07 UTC, 배포 99ac8eb5)
+
+`wrangler tail --format json` 40 invocation 표본:
+
+| 지표 | 값 |
+|---|---|
+| **exceededCpu** | **0 / 40** |
+| cron CPU | min 5 · 중앙 8 · max 24 ms |
+| 10ms 초과 비율 | 14/40 (35%) — 값 11~24ms |
+| **weather-track 슬롯 (12:57)** | **14 ms, outcome ok** |
+| weather-page | n=6, 5~9 ms |
+| weather-commit | n=1, 6 ms |
+| news-process | n=3, 17~24 ms (최대 부하) |
+| quake | n=2, 9~13 ms |
+| `/api/latest` (프록시 요청) | 2 ms |
+
+즉 TC 트랙 수집은 명목 10ms를 넘지만(14ms) 강제 종료는 없고, 최대 부하는 트랙이 아니라
+news-process(24ms)다. 명목 초과 상태를 인지하고 운영하며 1102 발생 시 raw-only 강등을
+발동한다는 §8.7 계약은 유지된다.
+
+## 트랙 노출 지연 (설계 특성 — 버그 아님)
+
+슬롯 순서가 `page(0~49) → commit(55) → track(57)`이라, `:57`에 캐시된 트랙은 **다음 사이클
+`:55` commit**에서 latest에 병합된다. 결과:
+
+- 트랙 1건이 화면에 뜨기까지 최대 ~58분 지연
+- 활성 TC 4건 전부 채우려면 슬롯당 1건 회전 × 시간당 1슬롯 = **약 4시간** (캐시 TTL 6시간 내)
+- 재배포·장기 중단 후에는 트랙이 일시적으로 0건일 수 있다 (2026-08-21 13:07 실측: TTL 만료 후 재워밍 중, geom 전부 Point)
+
+UI는 이 상태를 "경보 점만 표시"로 자연 축약하며 거짓 표시는 없다. 개선 후보(백로그):
+commit이 트랙 캐시를 읽는 순서를 track 슬롯 뒤로 옮기거나, track 슬롯이 자체적으로
+latest의 weather 파트만 부분 갱신.
